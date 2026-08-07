@@ -1,0 +1,16 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3]
+
+[ext_resource type="Shader" path="res://resources/shaders/ground_meadow.gdshader" id="1"]
+
+[resource]
+render_priority = 0
+shader = ExtResource("1")
+shader_parameter/color_a = Color(0.505882, 0.560784, 0.313725, 1)
+shader_parameter/color_b = Color(0.447059, 0.505882, 0.278431, 1)
+shader_parameter/side_color = Color(0.529412, 0.443137, 0.317647, 1)
+shader_parameter/macro_scale = 0.045
+shader_parameter/micro_scale = 0.55
+shader_parameter/micro_strength = 0.18
+shader_parameter/speckle_scale = 3.2
+shader_parameter/speckle_strength = 0.1
+shader_parameter/surface_roughness = 0.95

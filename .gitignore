@@ -1,0 +1,25 @@
+# Godot-specific ignores
+.godot/
+*.gdshader.import
+
+# Imported assets
+.import/
+*.import
+
+# Executable builds
+*.exe
+*.dll
+*.dylib
+*.so
+
+# Editor cache
+.mono/
+mono_crash.*.json
+
+# Misc
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.tmp

@@ -1,0 +1,16 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3]
+
+[ext_resource type="Shader" path="res://resources/shaders/terrain_mound.gdshader" id="1"]
+
+[resource]
+shader = ExtResource("1")
+shader_parameter/color_a = Color(0.3, 0.44, 0.22, 1)
+shader_parameter/color_b = Color(0.26, 0.39, 0.19, 1)
+shader_parameter/line_color = Color(0.19, 0.29, 0.14, 1)
+shader_parameter/rock_color = Color(0.4, 0.38, 0.35, 1)
+shader_parameter/rock_shadow = Color(0.26, 0.25, 0.23, 1)
+shader_parameter/cell_size = 2.0
+shader_parameter/line_strength = 0.4
+shader_parameter/rock_start = 0.62
+shader_parameter/rock_end = 0.86
+shader_parameter/surface_roughness = 0.95
