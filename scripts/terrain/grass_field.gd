@@ -63,23 +63,56 @@ signal built
 @export_group("Wiring")
 @export var seed := 20240
 @export var material: Material = null
-## Placement yields to the tree after this many raycasts, so a large field's
-## placement is spread over several frames instead of blocking one for its
-## entire duration. A busy field otherwise reads as a stutter exactly when a
-## streamed chunk starts building near the player — see grass_manager.gd.
+## Where the ground is, when it is known as maths rather than as geometry.
+##
+## WITH one, each blade's spot is worked out by asking the heightfield directly.
+## WITHOUT one, placement falls back to firing a physics ray downward per blade,
+## which is how this worked before terrain became a heightfield.
+##
+## The fallback is not just slower, it is WRONG NOW: terrain is streamed, so the
+## collider a ray needs may not have been built yet, and a field planting itself
+## a moment too early would come out bald with no way to tell that it had. The
+## heightfield has no such problem — it can answer for ground nothing has ever
+## looked at. Raycasting is kept only for grass on hand-placed objects that are
+## not part of the heightfield at all.
+var heightfield: Heightfield = null
+## World-space rectangles, in XZ, where no grass is planted. Building
+## footprints, mostly: the heightfield describes the ground UNDER a building, so
+## without this, blades sprout through its floor. (The old raycast placement
+## dodged this by accident — a ray hit the roof first — which is also why it
+## used to grow grass on rooftops.)
+var exclusions: Array = []
+## Placement yields to the tree after this many blades, so a large field is
+## spread over several frames instead of blocking one for its entire duration.
+## A busy field otherwise reads as a stutter exactly when a streamed chunk
+## starts building near the player — see grass_manager.gd.
 ## 0 disables batching (finishes in one frame, same as before this existed).
-@export_range(0, 5000, 50) var raycasts_per_batch := 500
+@export_range(0, 5000, 50) var samples_per_batch := 500
 
 var _multimesh_instance: MultiMeshInstance3D = null
 var _planted := 0
+## Work actually done, with time spent waiting between frames excluded.
+##
+## Worth being pedantic about, because the obvious version is badly misleading:
+## placement yields every samples_per_batch blades, so wall-clock time across
+## the whole operation is dominated by how long the frames took, not by how much
+## work this did. An earlier version reported that wall-clock figure and it read
+## as ~60 ms per chunk when the real cost was a small fraction of it — which
+## made a cheap chunk and an expensive one look identical, and sent tuning after
+## the wrong things.
+var _work_usec := 0
+var _mark_usec := 0
 
 
 func _ready() -> void:
-	# One physics frame's grace: the terrain this field sits on was very
-	# likely added to the tree in the same frame as this node, and a body is
-	# not answerable to a raycast until the space has been stepped once.
-	# Without this wait every ray misses and the field comes out empty.
-	await get_tree().physics_frame
+	if heightfield == null:
+		# One physics frame's grace: the terrain this field sits on was very
+		# likely added to the tree in the same frame as this node, and a body is
+		# not answerable to a raycast until the space has been stepped once.
+		# Without this wait every ray misses and the field comes out empty.
+		# Not needed when planting off a heightfield, which does not care
+		# whether the ground has been built into the physics world yet.
+		await get_tree().physics_frame
 	_build()
 
 
@@ -89,22 +122,28 @@ func get_blade_count() -> int:
 	return _planted
 
 
+## Hands the frame back, keeping [member _work_usec] counting only real work.
+func _yield_now() -> void:
+	_work_usec += Time.get_ticks_usec() - _mark_usec
+	await get_tree().process_frame
+	_mark_usec = Time.get_ticks_usec()
+
+
 func _build() -> void:
-	var started_msec := Time.get_ticks_msec()
+	_work_usec = 0
+	_mark_usec = Time.get_ticks_usec()
 	var area := square_size * square_size if square_size > 0.0 else PI * radius * radius
 	var wanted := mini(int(density * area), max_blades)
-	var placements: Array = await _find_placements(wanted)
+	var placements: PackedVector3Array = await _find_placements(wanted)
 	_planted = placements.size()
 	if _planted == 0:
 		push_warning("GrassField '%s': nothing to plant on." % name)
 		built.emit()
 		return
 	# Worth seeing at a glance: this is the number that costs, and it is always
-	# lower than density x area once the rim feathering and the slope and ray
-	# rejections have had their say. The elapsed time is the number that
-	# actually limits how large a field can get — one raycast per candidate
-	# blade, done once at load, not a per-frame render cost.
-	var placed_msec := Time.get_ticks_msec() - started_msec
+	# lower than density x area once the rim feathering, the slope rejections
+	# and any exclusion rectangles have had their say.
+	var placed_usec := _work_usec + (Time.get_ticks_usec() - _mark_usec)
 
 	var multimesh := MultiMesh.new()
 	multimesh.transform_format = MultiMesh.TRANSFORM_3D
@@ -116,11 +155,10 @@ func _build() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed ^ 0x5f3a
 	for i in _planted:
-		var spot: Dictionary = placements[i]
 		var scale_y := 1.0 + rng.randf_range(-height_variation, height_variation)
 		var basis := Basis(Vector3.UP, rng.randf() * TAU)
 		basis = basis.scaled(Vector3(1.0, scale_y, 1.0))
-		multimesh.set_instance_transform(i, Transform3D(basis, spot["pos"]))
+		multimesh.set_instance_transform(i, Transform3D(basis, placements[i]))
 		multimesh.set_instance_custom_data(i, Color(
 			rng.randf(),   # phase
 			rng.randf(),   # stiffness
@@ -144,22 +182,33 @@ func _build() -> void:
 		Vector3((half_extent + reach) * 2.0, reach * 3.0, (half_extent + reach) * 2.0))
 	add_child(_multimesh_instance)
 
-	var total_msec := Time.get_ticks_msec() - started_msec
-	print("GrassField '%s': %d blades (asked for %d) — %d ms placement, %d ms total" % [
-		name, _planted, wanted, placed_msec, total_msec])
+	var total_usec := _work_usec + (Time.get_ticks_usec() - _mark_usec)
+	print("GrassField '%s': %d blades (asked for %d) — %.1f ms placing, %.1f ms total work" % [
+		name, _planted, wanted, placed_usec / 1000.0, total_usec / 1000.0])
 	built.emit()
 
 
-## Rays straight down over the patch, keeping the ones that land on ground
-## flat enough to grow on. Returns dictionaries with a local-space position.
-func _find_placements(count: int) -> Array:
-	var space := get_world_3d().direct_space_state
+## Scatters candidate spots across the patch and keeps the ones standing on
+## ground flat enough to grow on. Returns dictionaries with a local-space
+## position.
+##
+## Where the ground IS comes either from the heightfield (arithmetic, instant,
+## and answerable for terrain that has not been built yet) or, without one, from
+## a downward physics ray per blade. See [member heightfield].
+func _find_placements(count: int) -> PackedVector3Array:
+	var space := get_world_3d().direct_space_state if heightfield == null else null
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed
 	var min_up := cos(deg_to_rad(max_slope_degrees))
-	var results: Array = []
+	# Packed, not an Array of dictionaries: at tens of thousands of blades per
+	# chunk the per-entry allocation was costing more than finding the spots.
+	var results := PackedVector3Array()
 	var origin := global_position
 	var square := square_size > 0.0
+	# Hoisted out of the loop. to_local() rebuilds this inverse on every call,
+	# and it was the single largest cost in placing a chunk of grass — far
+	# larger than working out where the ground is.
+	var to_local_xform := global_transform.affine_inverse()
 
 	for _i in count:
 		var x: float
@@ -181,22 +230,47 @@ func _find_placements(count: int) -> Array:
 			x = origin.x + cos(angle) * r
 			z = origin.z + sin(angle) * r
 
-		var query := PhysicsRayQueryParameters3D.create(
-			Vector3(x, origin.y + 60.0, z),
-			Vector3(x, origin.y - 60.0, z),
-			Layers.WORLD)
-		var hit := space.intersect_ray(query)
-
-		if raycasts_per_batch > 0 and (_i + 1) % raycasts_per_batch == 0:
-			await get_tree().process_frame
-
-		if hit.is_empty():
+		if _is_excluded(x, z):
 			continue
-		if hit["normal"].y < min_up:
+
+		var spot: Variant = null
+		if heightfield != null:
+			# Height first, then the flatness test reusing it — see
+			# Heightfield.slope_cosine_at for why that is worth doing.
+			var h := heightfield.height_at(x, z)
+			if heightfield.slope_cosine_at(x, z, h) >= min_up:
+				spot = Vector3(x, h, z)
+		else:
+			var query := PhysicsRayQueryParameters3D.create(
+				Vector3(x, origin.y + 60.0, z),
+				Vector3(x, origin.y - 60.0, z),
+				Layers.WORLD)
+			var hit := space.intersect_ray(query)
+			if not hit.is_empty() and hit["normal"].y >= min_up:
+				spot = hit["position"]
+
+		# Yielded AFTER sampling, not before, so a batch boundary cannot fall
+		# between choosing a spot and deciding whether to keep it.
+		if samples_per_batch > 0 and (_i + 1) % samples_per_batch == 0:
+			await _yield_now()
+
+		if spot == null:
 			continue
-		results.append({"pos": to_local(hit["position"])})
+		results.append(to_local_xform * (spot as Vector3))
 
 	return results
+
+
+## Whether a spot falls inside any of the no-grass rectangles — see
+## [member exclusions].
+func _is_excluded(x: float, z: float) -> bool:
+	if exclusions.is_empty():
+		return false
+	var p := Vector2(x, z)
+	for rect: Rect2 in exclusions:
+		if rect.has_point(p):
+			return true
+	return false
 
 
 ## One blade: a tapered strip standing on the origin, leaning slightly forward.

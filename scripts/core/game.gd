@@ -14,6 +14,19 @@ signal zone_changed(zone: Node3D)
 var player: Node3D = null
 var camera_rig: Node3D = null
 var current_zone: Node3D = null
+## The active zone's streamed ground manager, set when the zone builds. Chiefly
+## for TerrainManager.register_collision_anchor — see the note there for why
+## anything standing on the ground away from the player needs this.
+var terrain_manager: Node = null
+## The active zone's ground shape, set when the zone builds. Anything that needs
+## to know how high the ground is somewhere — spawning, placing props, dropping
+## an NPC onto a hillside — should ask this rather than raycasting, because it
+## answers instantly and works for ground that has not been streamed in yet.
+##
+## Only ever set at runtime. A zone's build() also runs in the editor, where
+## this autoload is not fully constructed — which is why every Game access in
+## zone.gd sits behind an Engine.is_editor_hint() check.
+var heightfield: Heightfield = null
 
 ## Set by whichever zone is loaded; the world uses it to place the player.
 var spawn_transform := Transform3D.IDENTITY
@@ -32,6 +45,10 @@ func register_camera(node: Node3D) -> void:
 func register_zone(node: Node3D) -> void:
 	current_zone = node
 	zone_changed.emit(node)
+
+
+func register_terrain_manager(node: Node) -> void:
+	terrain_manager = node
 
 
 ## Placeholder for multi-zone support. Swaps the zone node under the world

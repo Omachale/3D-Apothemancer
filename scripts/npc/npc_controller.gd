@@ -87,8 +87,40 @@ func _ready() -> void:
 		_force_loop(walk_clip)
 	_enter_idle()
 
+	# Terrain detail is keyed to the player's position, so ground under an NPC
+	# the player has walked away from can retile down to a tier with no
+	# collision — this NPC is a CharacterBody3D that needs is_on_floor() to be
+	# true or it falls straight through the world. Registering as an anchor
+	# guarantees solid ground within its wander circle regardless of where the
+	# player is. See TerrainManager.register_collision_anchor.
+	if Game.terrain_manager:
+		Game.terrain_manager.register_collision_anchor(self, wander_radius + 4.0)
+
+
+func _exit_tree() -> void:
+	if Game.terrain_manager:
+		Game.terrain_manager.unregister_collision_anchor(self)
+
 
 func _physics_process(delta: float) -> void:
+	# Ground is streamed in now, not permanently present the instant the zone
+	# loads — see [[has_ground_at]]. Without this gate, an NPC starts falling
+	# under gravity the moment it spawns, and how far it falls before its tile
+	# actually finishes building depends on real-world load timing (asset
+	# import, shader compilation), which is NOT bounded or deterministic. Given
+	# enough of a head start the fall can be fast enough to tunnel a thin
+	# single-layer trimesh outright, or land hard enough to wedge partway into
+	# it — a wedged body sits blocked but touching the mesh from the WRONG
+	# side, so is_on_floor() never reads true and the character looks sunk
+	# into the ground forever, with nothing (no error, no warning) marking
+	# what happened. Since an NPC's authored spawn Y is already the correct
+	# ground height (it comes from the same heightfield terrain reads from —
+	# see zone.gd), simply not moving at all until the ground under it is
+	# confirmed built means it never has anywhere to fall from in the first
+	# place: no visible drop, no tunnelling, no wedging, ever.
+	if not _ground_ready():
+		return
+
 	if not is_on_floor():
 		velocity.y -= _gravity * gravity_scale * delta
 
@@ -103,6 +135,17 @@ func _physics_process(delta: float) -> void:
 			_process_attack(delta)
 
 	move_and_slide()
+
+
+## True once the ground under this NPC's CURRENT position is confirmed built
+## and collidable. Zones without a TerrainManager (none exist yet, but nothing
+## here should hard-require one) are treated as always-ready — this is a
+## streaming safeguard, not a dependency.
+func _ground_ready() -> bool:
+	var terrain_manager: Node = Game.terrain_manager
+	if terrain_manager == null:
+		return true
+	return terrain_manager.has_ground_at(global_position.x, global_position.z)
 
 
 func _process_idle(delta: float) -> void:

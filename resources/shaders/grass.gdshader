@@ -94,12 +94,6 @@ group_uniforms culling;
 /// Blades shrink to nothing between these distances, rather than popping out.
 uniform float fade_start = 40.0;
 uniform float fade_end = 62.0;
-/// 0 = invisible, 1 = full size. Left at the default everywhere except a
-/// grass_manager.gd detail layer's own duplicated material instance, which
-/// tweens this from 0 to 1 (and back before freeing) so the extra blades that
-/// bring a chunk up to full density grow in instead of popping in — see
-/// grass_manager.gd's detail_radius / detail_fade_time.
-uniform float growth : hint_range(0.0, 1.0) = 1.0;
 
 varying float v_height;
 varying float v_tint;
@@ -238,7 +232,7 @@ void vertex() {
 		// come down. Without this the grass visibly grows during a gust.
 		VERTEX.y -= bend * bend * 0.9;
 
-		VERTEX *= visible * growth;
+		VERTEX *= visible;
 
 		NORMAL = normalize(mix(NORMAL, vec3(0.0, 1.0, 0.0), normal_softening));
 	}

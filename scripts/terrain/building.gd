@@ -404,12 +404,22 @@ func _build_floor(group: Node3D, level: int) -> void:
 			0.02, true)
 		return
 
-	# The opening in this floor is the one the flight below rises through.
+	# Inset to the wall's inner face rather than the building's outer edge.
+	# The wall below stands on the full perimeter band out to that outer edge,
+	# so a slab reaching the same distance would have its top face exactly
+	# coplanar with, and overlapping, the top of the wall beneath it — two
+	# opaque surfaces fighting for the same depth, which is what caused the
+	# flickering line at every floor level. Stopping the slab at the wall's
+	# inner face removes the overlap entirely; the visible ring at that height
+	# is then just the wall's own cap, not a second, differently-coloured slab
+	# edge poking out from under it.
+	var ix := hx - wall_thickness
+	var iz := hz - wall_thickness
 	var hole := _stairwell(level - 1)
-	_add_slab(group, "SlabWest", level, y, -hx, hole[0], -hz, hz)
-	_add_slab(group, "SlabEast", level, y, hole[1], hx, -hz, hz)
-	_add_slab(group, "SlabSouth", level, y, hole[0], hole[1], -hz, hole[2])
-	_add_slab(group, "SlabNorth", level, y, hole[0], hole[1], hole[3], hz)
+	_add_slab(group, "SlabWest", level, y, -ix, hole[0], -iz, iz)
+	_add_slab(group, "SlabEast", level, y, hole[1], ix, -iz, iz)
+	_add_slab(group, "SlabSouth", level, y, hole[0], hole[1], -iz, hole[2])
+	_add_slab(group, "SlabNorth", level, y, hole[0], hole[1], hole[3], iz)
 
 
 ## Adds one floor strip spanning the given local rectangle, with its walking
@@ -473,9 +483,11 @@ func _build_roof(group: Node3D) -> void:
 	var y := get_height()
 	# The roof slab is the ceiling of the top floor, so it is tagged one storey
 	# above it — the same "current + 1" gate that governs every other ceiling.
+	# Inset the same way as every other ceiling slab — see the note in
+	# _build_floor — so it does not overlap the top storey's wall cap.
 	_add_box(group, "RoofSlab", levels, Vector3(0.0, y - floor_thickness * 0.5, 0.0),
-		Vector3(size.x, floor_thickness, size.y), MAT_FLOOR, Layers.WORLD,
-		0.0, true)
+		Vector3(size.x - wall_thickness * 2.0, floor_thickness, size.y - wall_thickness * 2.0),
+		MAT_FLOOR, Layers.WORLD, 0.0, true)
 	if parapet_height <= 0.0:
 		return
 	var hx := size.x * 0.5

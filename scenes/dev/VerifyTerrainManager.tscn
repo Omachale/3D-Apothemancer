@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://cvtm0verify0001"]
+
+[ext_resource type="Script" path="res://scripts/dev/verify_terrain_manager.gd" id="1_verify"]
+
+[node name="VerifyTerrainManager" type="Node"]
+script = ExtResource("1_verify")

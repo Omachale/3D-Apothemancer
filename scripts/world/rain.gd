@@ -64,9 +64,20 @@ const LIGHT_FADE_TIME := 4.0
 ## fraction of this via amount_ratio, which is cheaper than resizing the
 ## particle buffer on every toggle.
 @export var max_particles := 2000
-## Box the rain spawns within, in world units (x = width, z = depth). Sized
-## to comfortably cover the ~40-unit view the default camera frames.
+## Floor for the box rain spawns within, in world units (x = width, z = depth).
+## The box actually used grows with camera zoom — see [member box_size_per_distance]
+## — so this is only the minimum, sized to comfortably cover the ~40-unit view
+## the default camera frames at its default distance.
 @export var emission_size := Vector2(44.0, 44.0)
+## World units the emission box grows per unit of camera zoom distance, so rain
+## keeps covering the visible ground as the player zooms out instead of leaving
+## bare screen at the edges. 2.2 matches emission_size at the camera's default
+## distance (44 / 20) — see camera_rig.gd's `distance`.
+@export var box_size_per_distance := 2.2
+## Furthest the camera can zoom out — camera_rig.gd clamps `distance` to this.
+## Used only to size visibility_aabb generously enough up front; the box
+## itself is sized from the camera's live distance every frame.
+const MAX_CAMERA_DISTANCE := 60.0
 ## Height above the follow point rain spawns at, and how tall the spawn box
 ## is — particles need to fall the full height before recycling or the
 ## streaks read as starting mid-air.
@@ -119,6 +130,7 @@ func _process(delta: float) -> void:
 		return
 	_follow_player()
 	_sync_to_wind()
+	_sync_box_to_camera()
 
 
 func _advance_intensity() -> void:
@@ -155,6 +167,7 @@ func set_intensity(value: Intensity) -> void:
 	# Snap to the player immediately so switching levels doesn't leave a
 	# frame of rain falling over wherever the emitter last was.
 	_follow_player()
+	_sync_box_to_camera()
 
 
 func _follow_player() -> void:
@@ -176,6 +189,21 @@ func _sync_to_wind() -> void:
 	# Mostly straight down, leaning sideways by [lean]. Y is left large and
 	# negative so the direction stays dominated by "down" even at high wind.
 	_process_material.direction = Vector3(lean.x, -20.0, lean.y).normalized()
+
+
+## Grows the emission box with camera zoom, so rain keeps covering the ground
+## the player can actually see rather than only the box it was originally sized
+## for at the default zoom. Reads the camera's live distance via duck typing
+## (Game.camera_rig is declared as plain Node3D) rather than a fixed
+## assumption, so this stays correct if camera_rig.gd's own zoom range changes.
+func _sync_box_to_camera() -> void:
+	if _process_material == null:
+		return
+	var distance := 20.0
+	if Game.camera_rig and Game.camera_rig.has_method("get_active_distance"):
+		distance = Game.camera_rig.get_active_distance()
+	var size := maxf(emission_size.x, distance * box_size_per_distance)
+	_process_material.emission_box_extents = Vector3(size * 0.5, spawn_box_height * 0.5, size * 0.5)
 
 
 ## Looks up the Sun the first time it exists (World.tscn's main scene loads
@@ -255,9 +283,14 @@ func _build_emitter() -> void:
 	_particles.amount = max_particles
 	_particles.lifetime = 1.6
 	_particles.local_coords = false # Spawn point follows the player; falling drops stay put in world space.
+	# Sized for the camera's maximum zoom, not just the default view — this is
+	# only a culling bound, so making it generous costs nothing, but making it
+	# too small would cull rain the player can actually see once _sync_box_to_camera
+	# has grown the emission box past what this AABB expects.
+	var culling_extent := MAX_CAMERA_DISTANCE * box_size_per_distance
 	_particles.visibility_aabb = AABB(
-		Vector3(-emission_size.x, -spawn_height - 4.0, -emission_size.y),
-		Vector3(emission_size.x * 2.0, spawn_height + 8.0, emission_size.y * 2.0))
+		Vector3(-culling_extent, -spawn_height - 4.0, -culling_extent),
+		Vector3(culling_extent * 2.0, spawn_height + 8.0, culling_extent * 2.0))
 	add_child(_particles)
 
 	_process_material = ParticleProcessMaterial.new()

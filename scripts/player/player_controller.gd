@@ -70,6 +70,18 @@ func _ready() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	# Ground streams in now rather than existing the instant the zone loads —
+	# see npc_controller.gd's _ground_ready() for the full reasoning, which
+	# applies here identically: without this, gravity can run for however long
+	# real-world asset/shader loading happens to delay the first terrain scan,
+	# and a large enough fall can tunnel through or wedge into a freshly-built
+	# tile in a way that never resolves. The player's spawn Y already comes
+	# from the same heightfield the terrain reads (see zone.gd's
+	# get_spawn_transform), so simply not moving until the ground is confirmed
+	# built means there is never a fall to have in the first place.
+	if not _ground_ready():
+		return
+
 	_update_run_toggle()
 	_update_aim()
 	if caster and Input.is_action_just_pressed("cast_primary"):
@@ -110,6 +122,17 @@ func _physics_process(delta: float) -> void:
 ## Horizontal speed in units/sec. Drives the animation blend.
 func get_planar_speed() -> float:
 	return Vector2(velocity.x, velocity.z).length()
+
+
+## True once the ground under the player's CURRENT position is confirmed built
+## and collidable. Zones without a TerrainManager (none exist yet, but nothing
+## here should hard-require one) are treated as always-ready — this is a
+## streaming safeguard, not a dependency.
+func _ground_ready() -> bool:
+	var terrain_manager: Node = Game.terrain_manager
+	if terrain_manager == null:
+		return true
+	return terrain_manager.has_ground_at(global_position.x, global_position.z)
 
 
 ## Shove the player. [param direction] is flattened and normalised, so callers

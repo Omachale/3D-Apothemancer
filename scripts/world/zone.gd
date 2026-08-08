@@ -19,6 +19,7 @@ const STAIRS_SCRIPT := preload("res://scripts/terrain/stairs.gd")
 const BUILDING_SCRIPT := preload("res://scripts/terrain/building.gd")
 const MOUND_SCRIPT := preload("res://scripts/terrain/terrain_mound.gd")
 const GRASS_MANAGER_SCRIPT := preload("res://scripts/world/grass_manager.gd")
+const TERRAIN_MANAGER_SCRIPT := preload("res://scripts/world/terrain_manager.gd")
 
 const WITCH_SCENE := preload("res://scenes/npc/Witch.tscn")
 const MEDIEVAL_SCENE := preload("res://scenes/npc/Medieval.tscn")
@@ -36,21 +37,56 @@ const WALL_SCENE := preload("res://scenes/props/WallProp.tscn")
 ## Which way they face on arrival, in degrees.
 @export var spawn_yaw := 180.0
 
+## Built once by [method _ensure_heightfield] and shared by everything that
+## needs to know where the ground is.
+var _heightfield: Heightfield = null
+
 
 # ---------------------------------------------------------------------------
 # LAYOUT
 # ---------------------------------------------------------------------------
 
-## Flat walkable slabs. `y` is the walking surface; `thickness` should be deep
-## enough that a raised plate sinks into whatever is beneath it, with no gap.
+## THE SHAPE OF THE LAND ITSELF — see [Heightfield]. This replaced the fixed
+## 140x140 "MainPlane" slab that used to be the world: ground is now a function
+## of position rather than an object, so terrain_manager.gd can build only the
+## part near the player, at whatever detail that distance deserves, and the map
+## has no edge to fall off.
+##
+## Everything here is data. A future terrain-painting tool would write this list
+## rather than anyone typing coordinates.
+##
+## NOTE rolling_amplitude is deliberately 0, so open ground is exactly as flat
+## as the slab it replaces. That keeps this migration honest: the world should
+## look unchanged, and what changed is that it now streams and does not end.
+## Turning it up is the first thing to try once that is confirmed — but the
+## keep, terrace and stairs all assume the ground beneath them is level, so they
+## will need fitting to the land at the same time.
+func get_heightfield() -> Heightfield:
+	var field := Heightfield.new()
+	field.seed = 20240
+	field.base_elevation = 0.0
+	field.rolling_amplitude = 0.0
+	field.rolling_frequency = 0.008
+	field.features = [
+		# Was the "SouthHill" TerrainMound. Same centre, radius and height, so
+		# the same hill stands in the same place — it is simply described now
+		# rather than built.
+		{"type": "hill", "pos": Vector2(-46, -46),
+			"radius": 24.0, "height": 11.0, "noise": 1.9},
+	]
+	return field
+
+
+## Flat walkable slabs standing ON the heightfield. `y` is the walking surface;
+## `thickness` should be deep enough that a raised plate sinks into whatever is
+## beneath it, with no gap.
+##
+## The ground plane is no longer one of these — see [method get_heightfield].
+## What belongs here now is anything architectural: a level platform, a
+## foundation, anything with a hard edge the land itself should not have.
 func get_plates() -> Array:
 	return [
-		# The main ground plane. Widened from 100 to 140 so the mound in the
-		# south-west corner sits on it rather than hanging off the edge.
-		{"name": "MainPlane", "pos": Vector3(0, 0, 0), "size": Vector2(140, 140),
-			"thickness": 1.0, "material": MAT_GRASS},
-
-		# A lower terrace on the far side of the map, to prove the system
+		# A raised terrace on the far side of the map, to prove the system
 		# handles more than one elevation.
 		{"name": "Terrace", "pos": Vector3(-25, 1.5, 20), "size": Vector2(20, 20),
 			"thickness": 1.9, "material": MAT_HIGHLAND},
@@ -67,28 +103,66 @@ func get_staircases() -> Array:
 	]
 
 
-## Procedural hills — real sloped landscape, as opposed to the stepped boxes
-## `get_plates()` produces. `radius` and `height` together set the steepness,
-## and the player cannot climb past 50 degrees; `terrain_mound.gd` documents
-## the relationship and offers `max_slope_degrees()` to check a change.
+## Standalone sculpted hills, built as their own mesh with their own collider.
+##
+## Empty now: the one hill this zone had is a heightfield feature instead, which
+## streams and takes detail levels, neither of which a TerrainMound can do.
+## Kept available for the case a heightfield cannot express — a hill with an
+## overhang, or one that has to sit on top of a plate rather than on the land.
 func get_mounds() -> Array:
-	return [
-		# South-west corner, clear of the keep (which ends at z = -20).
-		{"name": "SouthHill", "pos": Vector3(-46, 0, -46),
-			"radius": 24.0, "height": 11.0, "noise_amplitude": 1.9},
-	]
+	return []
+
+
+## How the ground is streamed and how its detail falls away with distance — see
+## terrain_manager.gd.
+##
+## `detail_tiers` is the whole "draw less, more cleverly" idea in one list:
+## nearest first, each entry saying how finely to build ground out to that
+## range. The nearest tier is the only one with collision, because it is the
+## only one the player can reach. Measured cost per 32-unit tile is about 16 ms
+## at resolution 32 and 0.4 ms at resolution 4, so the horizon is nearly free.
+##
+## The last tier's distance is the view horizon. There is no map edge beyond it,
+## only unbuilt ground — walking toward it simply builds more.
+func get_terrain_manager() -> Dictionary:
+	return {"chunk_size": 32.0, "unload_margin": 48.0, "skirt_depth": 2.0,
+		"detail_tiers": [
+			{"distance": 64.0, "resolution": 32, "collision": true},
+			{"distance": 144.0, "resolution": 8, "collision": false},
+			{"distance": 272.0, "resolution": 4, "collision": false},
+		]}
 
 
 ## Wall-to-wall grass, streamed in square chunks around the player rather
-## than a fixed set of hand-placed patches — see grass_manager.gd. Blades are
-## raycast onto whatever terrain is underneath each chunk, so it can safely
-## straddle a slope, and `density` is blades per square metre, same dial as
-## before. `load_radius` is sized to clear everything the isometric camera
-## can show at a bit past the default zoom in any direction the player
-## rotates to, so a chunk should never visibly pop in or out.
+## than a fixed set of hand-placed patches — see grass_manager.gd. Blades now
+## find the ground by asking the heightfield instead of raycasting, which is
+## both faster and, more importantly, works before the terrain tile beneath a
+## chunk has been built. `density` is blades per square metre, same dial as
+## before. `load_radius` is sized to clear everything the isometric camera can
+## show at a bit past the default zoom in any direction the player rotates to,
+## so a chunk should never visibly pop in or out.
 func get_grass_manager() -> Dictionary:
-	return {"chunk_size": 20.0, "load_radius": 45.0, "unload_radius": 65.0,
+	return {"chunk_size": 20.0, "load_radius": 50.0, "unload_radius": 70.0,
 		"density": 30.0, "max_slope": 35.0, "seed": 20240}
+
+
+## Footprints, in world XZ, where grass must not grow.
+##
+## The heightfield describes the ground UNDER a building, not its floor, so
+## without these, blades sprout through it. The old raycast placement dodged
+## this by accident — a downward ray struck the roof first — which is also why
+## it used to plant grass on rooftops.
+##
+## Each entry must cover the object's footprint; check a new building's `pos`
+## and `size` in [method get_buildings] against this list.
+func get_grass_exclusions() -> Array:
+	return [
+		# StoneKeep: centred (-26, -14), 16 x 12.
+		Rect2(-34.0, -20.0, 16.0, 12.0),
+		# Terrace: centred (-25, 20), 20 x 20. Grass under a solid plate is
+		# invisible and still costs a blade, so it is simply not planted.
+		Rect2(-35.0, 10.0, 20.0, 20.0),
+	]
 
 
 ## Multi-storey buildings. Each is generated from its own numbers by
@@ -151,17 +225,47 @@ func _ready() -> void:
 		Game.register_zone(self)
 
 
+## Where the player starts, with [member spawn_position]'s Y read as clearance
+## ABOVE the ground rather than as an absolute height. Terrain is streamed now,
+## so the tile under the spawn point may not exist yet and a raycast could not
+## answer this — the heightfield can, before anything is built.
 func get_spawn_transform() -> Transform3D:
-	return Transform3D(Basis(Vector3.UP, deg_to_rad(spawn_yaw)), spawn_position)
+	var field := _ensure_heightfield()
+	var pos := spawn_position
+	pos.y = field.height_at(pos.x, pos.z) + spawn_position.y
+	return Transform3D(Basis(Vector3.UP, deg_to_rad(spawn_yaw)), pos)
+
+
+## The one heightfield this zone is using. Built on first ask and reused, so
+## every consumer — terrain, grass, spawning — is reading the same land.
+func _ensure_heightfield() -> Heightfield:
+	if _heightfield == null:
+		_heightfield = get_heightfield()
+	return _heightfield
 
 
 func build() -> void:
 	for child in get_children():
 		child.free()
+	# Dropped so an edited layout takes effect on rebuild rather than the old
+	# land quietly persisting.
+	_heightfield = null
+	var field := _ensure_heightfield()
+	# Guarded like every other Game access in this script: build() also runs in
+	# the editor, where the autoload is not fully set up and touching it fails.
+	if not Engine.is_editor_hint():
+		Game.heightfield = field
+
+	var unclimbable := field.find_unclimbable_features(50.0)
+	if not unclimbable.is_empty():
+		push_warning("Zone '%s': terrain too steep for the player to climb: %s" % [
+			name, unclimbable])
 
 	var terrain := Node3D.new()
 	terrain.name = "Terrain"
 	add_child(terrain)
+	# The streamed ground itself, before anything that stands on it.
+	terrain.add_child(_make_terrain_manager(get_terrain_manager(), field))
 
 	var props := Node3D.new()
 	props.name = "Props"
@@ -176,12 +280,10 @@ func build() -> void:
 	for data in get_buildings():
 		terrain.add_child(_make_building(data))
 
-	# Grass plants itself by raycasting onto the terrain above, so it has to be
-	# added after everything it might land on.
 	var flora := Node3D.new()
 	flora.name = "Grass"
 	add_child(flora)
-	flora.add_child(_make_grass_manager(get_grass_manager()))
+	flora.add_child(_make_grass_manager(get_grass_manager(), field))
 
 	var npcs := Node3D.new()
 	npcs.name = "NPCs"
@@ -228,9 +330,24 @@ func _make_mound(data: Dictionary) -> TerrainMound:
 	return mound
 
 
-func _make_grass_manager(data: Dictionary) -> GrassManager:
+func _make_terrain_manager(data: Dictionary, field: Heightfield) -> TerrainManager:
+	var manager: TerrainManager = TERRAIN_MANAGER_SCRIPT.new()
+	manager.name = "TerrainManager"
+	manager.heightfield = field
+	manager.chunk_size = data.get("chunk_size", 32.0)
+	manager.unload_margin = data.get("unload_margin", 48.0)
+	manager.skirt_depth = data.get("skirt_depth", 2.0)
+	manager.material = data.get("material", MAT_GRASS)
+	if data.has("detail_tiers"):
+		manager.detail_tiers = data["detail_tiers"]
+	return manager
+
+
+func _make_grass_manager(data: Dictionary, field: Heightfield) -> GrassManager:
 	var manager: GrassManager = GRASS_MANAGER_SCRIPT.new()
 	manager.name = "GrassManager"
+	manager.heightfield = field
+	manager.exclusions = get_grass_exclusions()
 	manager.chunk_size = data.get("chunk_size", 20.0)
 	manager.load_radius = data.get("load_radius", 45.0)
 	manager.unload_radius = data.get("unload_radius", 65.0)
