@@ -17,8 +17,14 @@
 ## Downward tilt. -90 would be straight down; -50 keeps some sense of height.
 @export_range(-89.0, -5.0, 1.0) var pitch := -45.0: set = set_pitch
 ## How far the camera sits back along the view ray.
-@export_range(4.0, 60.0, 0.5) var distance := 15.0: set = set_distance
+@export_range(4.0, 60.0, 0.5) var distance := 20.0: set = set_distance
 @export_range(10.0, 90.0, 1.0) var fov := 45.0: set = set_fov
+## World units [member distance] moves per scroll-wheel notch. Zooming out
+## (larger distance) reads as "smaller on screen, more of the map visible" —
+## the same three numbers (yaw/pitch/distance) already drive the whole
+## framing, so this is just scroll wired to one of them, clamped to the
+## @export_range above like every other path that touches distance.
+@export_range(0.5, 10.0, 0.5) var zoom_step := 2.5
 
 @export_group("Follow")
 ## Point on the player the camera centres on, relative to their feet.
@@ -74,6 +80,14 @@ func _process(delta: float) -> void:
 
 	if Input.is_action_just_pressed("camera_inspect"):
 		_inspect_on = not _inspect_on
+
+	# Only zooms the gameplay framing — inspect mode has its own fixed
+	# distance for judging poses up close, and scrolling shouldn't disturb it.
+	if not _inspect_on:
+		if Input.is_action_just_pressed("camera_zoom_in"):
+			set_distance(clampf(distance - zoom_step, 4.0, 60.0))
+		elif Input.is_action_just_pressed("camera_zoom_out"):
+			set_distance(clampf(distance + zoom_step, 4.0, 60.0))
 	var blend_weight := 1.0 - exp(-delta / maxf(inspect_blend_time, 0.001))
 	var inspect_goal := 1.0 if _inspect_on else 0.0
 	if not is_equal_approx(_inspect, inspect_goal):

@@ -109,6 +109,81 @@ the same direction, with a bit of phase lag, rather than each moving
 independently. Trees are not instanced (only a dozen or so), so no
 MultiMesh work is needed there, unlike grass.
 
+## Cloud shadows — abandoned, needs a different approach
+
+Rain, lightning and sun-dimming all shipped and work. Moving dark cloud
+shadows across the ground/grass did not, after many attempts, and the code
+for it has been removed (was `cloud_coverage` global uniform, `cloud_test_*`
+uniforms and the `cloud_*` functions in `grass.gdshader` and
+`ground_meadow.gdshader`, plus the coverage plumbing in `rain.gd`). The
+`git log` history for those two shader files has the discarded attempts if a
+future session wants to see exact code rather than just this summary.
+
+**The actual goal:** a soft, irregular, blob-shaped patch of darkening that
+drifts across the field with the wind, no visible edge shape.
+
+**What was tried, in order, and why each failed:**
+1. **Single-octave bilinear value noise, thresholded with `smoothstep`.**
+   Drew a near-straight edge. Cause: at the chosen scale, the visible ~40-60
+   unit view only ever showed part of *one* noise cell, and a bilinear surface
+   is locally a plane — thresholding a plane draws a straight line.
+2. **More octaves of the same value noise.** Softened the edge slightly but
+   did not fix it, because value noise's bilinear interpolation formula
+   (`a + (b-a)u + (c-a)v + (a-b-c+d)uv`) has level sets that are hyperbolas
+   whose asymptotes run parallel to world X and Z *regardless of scale* —
+   every octave shares that same axis-aligned skeleton, so stacking more of
+   them reinforces the artifact instead of hiding it. This is a structural
+   property of value noise, not a tuning problem.
+3. **Perturbing the `smoothstep` threshold with summed sine waves,** to try to
+   wobble the edge. Made it worse: `sin()` of a linear function of position
+   has *perfectly straight* level sets of its own, so this added a second,
+   independent source of straight lines on top of the first.
+4. **Switching to gradient noise** (dot products against random per-corner
+   directions, i.e. real Perlin/simplex-style noise) with 3 rotated octaves
+   and domain warping. This genuinely fixed the axis-aligned-straight-line
+   problem — no more crossing lines. But then:
+5. Ran into a **second, different bug**: the test area was sized so the whole
+   visible patch sat inside roughly one noise cell of the dominant octave,
+   so instead of a straight line it showed that one cell's smooth, roughly
+   diamond-shaped centre. Fixed by increasing `cloud_scale` so several cells
+   spanned the visible area.
+6. Even with multiple cells visible, the result still read as "a mix of odd
+   polygons" rather than organic blobs — some segments of the boundary were
+   still visibly straight over a noticeable distance. Root cause not fully
+   diagnosed; plausibly the level sets of low-octave-count gradient noise
+   still have long near-straight runs between curvature changes at this
+   scale, and 3 octaves plus one round of domain warp was not enough to hide
+   it. Not investigated further.
+7. **Removed the threshold entirely**, using the raw (warped, multi-octave)
+   noise value directly as a continuous darkening amount instead of a
+   thresholded shape — reasoning that if nothing is ever "inside" vs.
+   "outside" a boundary, there's no edge to look wrong. Also looked bad and
+   still showed a fairly straight edge, which was not fully explained before
+   the effort was abandoned — worth understanding why before trying again,
+   since it undermines the theory that thresholding was the whole problem.
+
+**Ideas not yet tried, for a future attempt:**
+- **A hand-authored, tileable, low-res grayscale cloud texture, scrolled over
+  time**, instead of computing shape from noise at all. This is closer to
+  how simple commercial weather assets actually do it — no runtime shape
+  math means no shape-math bugs. Would need either a downloaded/generated
+  texture or a small offline script to bake one (e.g. blurred blob shapes
+  composited in an image tool), which is a different kind of work than
+  shader tuning.
+- **Worley/cellular noise** instead of Perlin-style gradient noise — genuinely
+  different level-set geometry (cell boundaries, not smooth ridges), might
+  break up the residual straightness point 6 ran into. Not implemented in
+  Godot by default; would need writing from scratch.
+- Actually rendering a **small number of soft round decals/sprites** (additive
+  darkening blobs with a radial falloff, no noise at all) moving independently,
+  rather than one continuous noise field. Cheap, guaranteed no straight edges
+  by construction, at the cost of looking less "natural"/irregular.
+- Before any of the above: get an actual diagnosis of *why* step 7 (no
+  threshold at all) still showed a straight edge. If a plain continuous noise
+  value can still produce a visible straight edge, something more
+  fundamental than thresholding was misunderstood, and it is worth finding
+  that before investing in a new technique that might inherit the same bug.
+
 ## Things learned that are easy to forget
 
 - At the gameplay camera distance the character is ~100px tall and the hat

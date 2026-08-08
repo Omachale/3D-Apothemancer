@@ -18,8 +18,23 @@ extends Node3D
 
 const DEFAULT_MATERIAL := preload("res://resources/materials/grass_blades.tres")
 
+## Emitted once, after placement finishes and blades are in the MultiMesh
+## (even if zero blades were planted). grass_manager.gd waits on this so it
+## can throttle how many chunks build at once instead of spawning them all in
+## one frame.
+signal built
+
 @export_group("Extent")
+## Ignored when [member square_size] is nonzero — see that var. Kept as the
+## default mode because a single hand-placed meadow patch (no neighbours to
+## tile with) wants a soft round edge, not a square one.
 @export_range(1.0, 80.0, 0.5) var radius := 12.0
+## When > 0, placement scatters across a [param square_size] x [param
+## square_size] square instead of a circle of [member radius], and skips edge
+## feathering. This is what grass_manager.gd's chunks use: a circle either
+## leaves gaps at a grid cell's corners or, sized to cover them, overlaps and
+## double-plants the band shared with the next chunk. A square tiles exactly.
+@export_range(0.0, 200.0, 0.5) var square_size := 0.0
 ## Blades per square metre. The single number that decides both how good this
 ## looks and what it costs — see [member max_blades].
 @export_range(1.0, 400.0, 1.0) var density := 90.0
@@ -48,6 +63,12 @@ const DEFAULT_MATERIAL := preload("res://resources/materials/grass_blades.tres")
 @export_group("Wiring")
 @export var seed := 20240
 @export var material: Material = null
+## Placement yields to the tree after this many raycasts, so a large field's
+## placement is spread over several frames instead of blocking one for its
+## entire duration. A busy field otherwise reads as a stutter exactly when a
+## streamed chunk starts building near the player — see grass_manager.gd.
+## 0 disables batching (finishes in one frame, same as before this existed).
+@export_range(0, 5000, 50) var raycasts_per_batch := 500
 
 var _multimesh_instance: MultiMeshInstance3D = null
 var _planted := 0
@@ -70,11 +91,13 @@ func get_blade_count() -> int:
 
 func _build() -> void:
 	var started_msec := Time.get_ticks_msec()
-	var wanted := mini(int(density * PI * radius * radius), max_blades)
-	var placements := _find_placements(wanted)
+	var area := square_size * square_size if square_size > 0.0 else PI * radius * radius
+	var wanted := mini(int(density * area), max_blades)
+	var placements: Array = await _find_placements(wanted)
 	_planted = placements.size()
 	if _planted == 0:
 		push_warning("GrassField '%s': nothing to plant on." % name)
+		built.emit()
 		return
 	# Worth seeing at a glance: this is the number that costs, and it is always
 	# lower than density x area once the rim feathering and the slope and ray
@@ -115,14 +138,16 @@ func _build() -> void:
 	# instance transforms, so widen the box or patches flicker out at the edge
 	# of view.
 	var reach := blade_height * (1.0 + height_variation) + 1.0
+	var half_extent := square_size * 0.5 if square_size > 0.0 else radius
 	_multimesh_instance.custom_aabb = AABB(
-		Vector3(-radius - reach, -reach, -radius - reach),
-		Vector3((radius + reach) * 2.0, reach * 3.0, (radius + reach) * 2.0))
+		Vector3(-half_extent - reach, -reach, -half_extent - reach),
+		Vector3((half_extent + reach) * 2.0, reach * 3.0, (half_extent + reach) * 2.0))
 	add_child(_multimesh_instance)
 
 	var total_msec := Time.get_ticks_msec() - started_msec
 	print("GrassField '%s': %d blades (asked for %d) — %d ms placement, %d ms total" % [
 		name, _planted, wanted, placed_msec, total_msec])
+	built.emit()
 
 
 ## Rays straight down over the patch, keeping the ones that land on ground
@@ -134,25 +159,37 @@ func _find_placements(count: int) -> Array:
 	var min_up := cos(deg_to_rad(max_slope_degrees))
 	var results: Array = []
 	var origin := global_position
+	var square := square_size > 0.0
 
 	for _i in count:
-		# sqrt keeps the scatter even; without it everything crowds the middle.
-		var angle := rng.randf() * TAU
-		var unit := sqrt(rng.randf())
-		# Thin the planting out toward the rim so the patch has no hard edge.
-		if edge_feather > 0.0:
-			var keep := 1.0 - smoothstep(1.0 - edge_feather, 1.0, unit)
-			if rng.randf() > keep:
-				continue
-		var r := unit * radius
-		var x := origin.x + cos(angle) * r
-		var z := origin.z + sin(angle) * r
+		var x: float
+		var z: float
+		if square:
+			var half := square_size * 0.5
+			x = origin.x + rng.randf_range(-half, half)
+			z = origin.z + rng.randf_range(-half, half)
+		else:
+			# sqrt keeps the scatter even; without it everything crowds the middle.
+			var angle := rng.randf() * TAU
+			var unit := sqrt(rng.randf())
+			# Thin the planting out toward the rim so the patch has no hard edge.
+			if edge_feather > 0.0:
+				var keep := 1.0 - smoothstep(1.0 - edge_feather, 1.0, unit)
+				if rng.randf() > keep:
+					continue
+			var r := unit * radius
+			x = origin.x + cos(angle) * r
+			z = origin.z + sin(angle) * r
 
 		var query := PhysicsRayQueryParameters3D.create(
 			Vector3(x, origin.y + 60.0, z),
 			Vector3(x, origin.y - 60.0, z),
 			Layers.WORLD)
 		var hit := space.intersect_ray(query)
+
+		if raycasts_per_batch > 0 and (_i + 1) % raycasts_per_batch == 0:
+			await get_tree().process_frame
+
 		if hit.is_empty():
 			continue
 		if hit["normal"].y < min_up:
