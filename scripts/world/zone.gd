@@ -116,21 +116,24 @@ func get_mounds() -> Array:
 ## How the ground is streamed and how its detail falls away with distance — see
 ## terrain_manager.gd.
 ##
-## `detail_tiers` is the whole "draw less, more cleverly" idea in one list:
-## nearest first, each entry saying how finely to build ground out to that
-## range. The nearest tier is the only one with collision, because it is the
-## only one the player can reach. Measured cost per 32-unit tile is about 16 ms
-## at resolution 32 and 0.4 ms at resolution 4, so the horizon is nearly free.
+## Detail is chosen from projected screen size now, not a fixed-distance
+## ladder — `resolutions` is just the set of levels available; where each one
+## actually gets used falls out of `max_screen_error_px` and wherever the
+## camera happens to be, including its altitude once flying exists. Only the
+## finest resolution gets collision, because it is the only one the player can
+## reach. Measured cost per 32-unit tile is about 16 ms at resolution 32 and
+## 0.4 ms at resolution 4, so the horizon is nearly free.
 ##
-## The last tier's distance is the view horizon. There is no map edge beyond it,
-## only unbuilt ground — walking toward it simply builds more.
+## `horizon_distance` is the hard edge past which nothing is built at all —
+## the screen-space test alone never reaches exactly zero, so this is what
+## keeps the world finite. There is no MAP edge short of it, only unbuilt
+## ground — walking, or flying, toward it simply builds more.
 func get_terrain_manager() -> Dictionary:
 	return {"chunk_size": 32.0, "unload_margin": 48.0, "skirt_depth": 2.0,
-		"detail_tiers": [
-			{"distance": 64.0, "resolution": 32, "collision": true},
-			{"distance": 144.0, "resolution": 8, "collision": false},
-			{"distance": 272.0, "resolution": 4, "collision": false},
-		]}
+		"resolutions": [2, 4, 8, 16, 32],
+		"max_screen_error_px": 24.0,
+		"collision_resolution_minimum": 32,
+		"horizon_distance": 480.0}
 
 
 ## Wall-to-wall grass, streamed in square chunks around the player rather
@@ -338,8 +341,20 @@ func _make_terrain_manager(data: Dictionary, field: Heightfield) -> TerrainManag
 	manager.unload_margin = data.get("unload_margin", 48.0)
 	manager.skirt_depth = data.get("skirt_depth", 2.0)
 	manager.material = data.get("material", MAT_GRASS)
-	if data.has("detail_tiers"):
-		manager.detail_tiers = data["detail_tiers"]
+	if data.has("resolutions"):
+		# TerrainManager.resolutions is a typed Array[int]; the Dictionary
+		# literal in get_terrain_manager() below produces a plain untyped
+		# Array, and GDScript does not implicitly convert one into the other
+		# on assignment — hence the explicit rebuild here rather than a direct
+		# assign.
+		var typed: Array[int] = []
+		for value in data["resolutions"]:
+			typed.append(int(value))
+		manager.resolutions = typed
+	manager.max_screen_error_px = data.get("max_screen_error_px", manager.max_screen_error_px)
+	manager.collision_resolution_minimum = data.get(
+		"collision_resolution_minimum", manager.collision_resolution_minimum)
+	manager.horizon_distance = data.get("horizon_distance", manager.horizon_distance)
 	return manager
 
 

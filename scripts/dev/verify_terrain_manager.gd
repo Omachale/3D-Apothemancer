@@ -1,25 +1,43 @@
 extends Node
 
 ## Checks terrain_manager.gd streams ground correctly as the player moves: the
-## right tiles exist, at the right detail, collision only where it is needed,
-## and — the whole point of the exercise — the amount resident stays FLAT no
-## matter how far the player walks.
+## right tiles exist, at the right resolution, collision only where it is
+## needed, and — the whole point of the exercise — the amount resident stays
+## FLAT no matter how far the player walks.
 ##
 ## Run as a SCENE rather than with --script, because TerrainManager reaches the
 ## player through the Game autoload and autoloads are not set up for --script:
 ##   Godot --headless res://scenes/dev/VerifyTerrainManager.tscn
 ## Exits non-zero if any check fails.
+##
+## CALIBRATED AGAINST THE RUNTIME VIEWPORT, not hardcoded distances. Detail is
+## now chosen from projected screen size (see terrain_manager.gd's class doc),
+## so the distance at which any given resolution becomes sufficient depends on
+## the actual viewport height this test happens to run at — headless Godot's
+## window size is not something this file should assume. _setup_manager()
+## reads the real viewport and picks max_screen_error_px so the resolution
+## bands land at known, well-separated distances regardless of environment,
+## the same way a designer tuning the slider by eye would arrive at a number
+## for their own screen.
 
 const CHUNK_SIZE := 32.0
-const TIERS := [
-	{"distance": 40.0, "resolution": 16, "collision": true},
-	{"distance": 90.0, "resolution": 8, "collision": false},
-	{"distance": 160.0, "resolution": 4, "collision": false},
-]
+## Ascending (coarsest first), matching terrain_manager.gd's convention.
+const RESOLUTIONS: Array[int] = [4, 8, 16, 32]
+## Where the coarsest resolution's own band starts, in world units — this is
+## the number _setup_manager() solves max_screen_error_px for. Each finer
+## resolution's band then starts at half the previous, by the formula's own
+## inverse-proportionality (see terrain_manager.gd's _resolution_for): 128,
+## 64, 32, 16. Comfortably separated for a headless test to tell apart.
+const COARSEST_BAND_START := 128.0
+const HORIZON := 200.0
 
 var _fails := 0
 var _player: Node3D = null
 var _manager: TerrainManager = null
+## Finest resolution's band starts here or closer — used by every check that
+## used to compare against "TIERS[0]".
+var _finest: int = RESOLUTIONS[RESOLUTIONS.size() - 1]
+var _coarsest: int = RESOLUTIONS[0]
 
 
 func _ready() -> void:
@@ -40,19 +58,7 @@ func _run() -> void:
 	root.add_child(_player)
 	Game.player = _player
 
-	_manager = TerrainManager.new()
-	_manager.heightfield = field
-	_manager.chunk_size = CHUNK_SIZE
-	_manager.detail_tiers = TIERS
-	_manager.max_concurrent_builds = 4
-	# Rescan every frame. At the production 0.25s the manager has not yet
-	# noticed the player moved when _settle() looks, so _settle() concludes the
-	# world is finished when it has not started — and every check downstream
-	# then measures a stale world that happens to look perfectly stable.
-	_manager.check_interval = 0.0
-	# Unbatched: this is a correctness test, and batching is already covered by
-	# verify_terrain_chunk.gd. Keeps the run to a few hundred frames.
-	_manager.vertices_per_batch = 0
+	_manager = _setup_manager(field)
 	root.add_child(_manager)
 
 	await _settle()
@@ -79,6 +85,41 @@ func _fail(msg: String) -> void:
 	_fails += 1
 
 
+## Builds a manager whose resolution bands land at known distances no matter
+## what viewport this happens to run in. Game.camera_rig is never set in this
+## test, so terrain_manager.gd's _view_camera() falls back to its bootstrap
+## approximation of the rig's default framing (player position + a fixed
+## offset, 45 degree FOV) — this reads that same fallback back out rather than
+## duplicating it, so the two cannot drift apart silently.
+func _setup_manager(field: Heightfield) -> TerrainManager:
+	var manager := TerrainManager.new()
+	manager.heightfield = field
+	manager.chunk_size = CHUNK_SIZE
+	manager.resolutions = RESOLUTIONS.duplicate()
+	manager.collision_resolution_minimum = _finest
+	manager.horizon_distance = HORIZON
+	manager.unload_margin = 32.0
+	manager.max_concurrent_builds = 4
+	# Rescan every frame. At the production 0.25s the manager has not yet
+	# noticed the player moved when _settle() looks, so _settle() concludes the
+	# world is finished when it has not started — and every check downstream
+	# then measures a stale world that happens to look perfectly stable.
+	manager.check_interval = 0.0
+	# Unbatched: this is a correctness test, and batching is already covered by
+	# verify_terrain_chunk.gd. Keeps the run to a few hundred frames.
+	manager.vertices_per_batch = 0
+
+	var viewport_h := float(get_tree().root.get_visible_rect().size.y)
+	if viewport_h <= 0.0:
+		viewport_h = 600.0 # Headless without a window at all; keep the test alive.
+	var fov_rad := deg_to_rad(45.0) # Matches _view_camera()'s bootstrap fallback.
+	var k := viewport_h / (2.0 * tan(fov_rad * 0.5))
+	# Solving _resolution_for's own formula for the error budget that puts the
+	# COARSEST resolution's band boundary at COARSEST_BAND_START.
+	manager.max_screen_error_px = CHUNK_SIZE * k / (float(_coarsest) * COARSEST_BAND_START)
+	return manager
+
+
 ## Runs frames until the manager has nothing queued or building, so checks see
 ## a settled world rather than one mid-load.
 func _settle(limit := 4000) -> void:
@@ -103,18 +144,30 @@ func _tiles() -> Array:
 
 ## Whatever else happens, there must be ground under the player's feet, at full
 ## detail, that they can stand on.
+##
+## Looks up the ONE cell the player's exact position falls in (same lookup
+## has_ground_at() itself does), not every tile whose bounds happen to reach
+## that point. Those are not the same thing here: detail is keyed to the
+## CAMERA now, not the player (see terrain_manager.gd's _rescan), and the
+## bootstrap camera fallback used when no rig is registered sits at a diagonal
+## offset from the player. A player positioned exactly on a shared corner of
+## four cells — which this test's default Vector3.ZERO start is — can
+## therefore have neighbouring corner tiles at genuinely different distances
+## from the camera and, correctly, different resolutions. Only the specific
+## cell the player is standing IN is required to be full detail.
 func _check_ground_under_player() -> void:
 	var p := _player.global_position
 	if not _manager.has_ground_at(p.x, p.z):
 		_fail("no full-detail ground under the player")
+	var cell := _manager._cell_at(Vector2(p.x, p.z))
 	var found := false
 	for tile: TerrainChunk in _tiles():
-		var d := Vector2(tile.position.x - p.x, tile.position.z - p.z)
-		if absf(d.x) <= CHUNK_SIZE * 0.5 and absf(d.y) <= CHUNK_SIZE * 0.5:
+		if Vector2i(int(tile.position.x), int(tile.position.z)) == Vector2i(
+				int((cell.x + 0.5) * CHUNK_SIZE), int((cell.y + 0.5) * CHUNK_SIZE)):
 			found = true
 			if tile.get_node_or_null("Collider") == null:
 				_fail("the tile under the player has no collision")
-			if tile.resolution != TIERS[0]["resolution"]:
+			if tile.resolution != _finest:
 				_fail("the tile under the player is not at full detail")
 	if not found:
 		_fail("no tile covers the player's position at all")
@@ -133,12 +186,12 @@ func _check_has_ground_at_requires_real_collider() -> void:
 	if _manager.has_ground_at(spot.x, spot.z):
 		_fail("has_ground_at() true for a cell with no tile built at all")
 
-	# A tile whose bookkeeping claims tier 0 but has no Collider (mid-build, or
-	# a coarse tile masquerading) must still read as not-ready.
+	# A tile whose bookkeeping claims collision but has no Collider (mid-build,
+	# or a coarse tile masquerading) must still read as not-ready.
 	var fake_chunk := Node3D.new()
 	fake_chunk.name = "FakeTile"
 	_manager.add_child(fake_chunk)
-	_manager._active[cell] = {"chunk": fake_chunk, "tier": 0}
+	_manager._active[cell] = {"chunk": fake_chunk, "resolution": _finest, "collision": true}
 	if _manager.has_ground_at(spot.x, spot.z):
 		_fail("has_ground_at() true for a tile with no Collider child")
 
@@ -149,7 +202,7 @@ func _check_has_ground_at_requires_real_collider() -> void:
 	if not _manager.has_ground_at(spot.x, spot.z):
 		_fail("has_ground_at() still false once a real Collider exists")
 	else:
-		print("has_ground_at(): correctly requires an actual Collider, not just tier bookkeeping")
+		print("has_ground_at(): correctly requires an actual Collider, not just bookkeeping")
 
 	_manager._active.erase(cell)
 	fake_chunk.queue_free()
@@ -158,32 +211,32 @@ func _check_has_ground_at_requires_real_collider() -> void:
 
 ## The central claim of the whole design: further away means fewer vertices.
 func _check_detail_falls_off_with_distance() -> void:
-	var by_tier := {}
+	var by_res := {}
 	for tile: TerrainChunk in _tiles():
 		var d := Vector2(tile.position.x, tile.position.z).distance_to(
 			Vector2(_player.global_position.x, _player.global_position.z))
 		var res: int = tile.resolution
-		if not by_tier.has(res):
-			by_tier[res] = {"count": 0, "min_d": INF, "max_d": 0.0}
-		by_tier[res]["count"] += 1
-		by_tier[res]["min_d"] = minf(by_tier[res]["min_d"], d)
-		by_tier[res]["max_d"] = maxf(by_tier[res]["max_d"], d)
+		if not by_res.has(res):
+			by_res[res] = {"count": 0, "min_d": INF, "max_d": 0.0}
+		by_res[res]["count"] += 1
+		by_res[res]["min_d"] = minf(by_res[res]["min_d"], d)
+		by_res[res]["max_d"] = maxf(by_res[res]["max_d"], d)
 
-	var resolutions: Array = by_tier.keys()
-	resolutions.sort()
-	resolutions.reverse() # Finest first.
+	var seen: Array = by_res.keys()
+	seen.sort()
+	seen.reverse() # Finest first.
 	var previous_max := -1.0
-	for res: int in resolutions:
-		var info: Dictionary = by_tier[res]
+	for res: int in seen:
+		var info: Dictionary = by_res[res]
 		print("  res %2d: %3d tiles, %.0f to %.0f units away" % [
 			res, info["count"], info["min_d"], info["max_d"]])
 		# Each coarser band must start beyond where the finer one started.
 		if info["min_d"] < previous_max - CHUNK_SIZE:
 			_fail("res %d tiles appear closer than the finer band above them" % res)
 		previous_max = info["min_d"]
-	if resolutions.size() != TIERS.size():
-		_fail("expected %d detail bands, found %d" % [TIERS.size(), resolutions.size()])
-	print("detail falls off with distance across %d bands" % resolutions.size())
+	if seen.size() != RESOLUTIONS.size():
+		_fail("expected %d detail bands, found %d" % [RESOLUTIONS.size(), seen.size()])
+	print("detail falls off with distance across %d bands" % seen.size())
 
 
 ## Collision is a large share of a tile's cost, so it must exist only where the
@@ -194,7 +247,7 @@ func _check_collision_only_near() -> void:
 	for tile: TerrainChunk in _tiles():
 		if tile.get_node_or_null("Collider") != null:
 			with_collision += 1
-			if tile.resolution != TIERS[0]["resolution"]:
+			if tile.resolution != _finest:
 				_fail("a distant tile built collision it does not need")
 		else:
 			without += 1
@@ -259,7 +312,7 @@ func _check_retiling_on_approach() -> void:
 	# Pick a tile currently in the coarsest band, well ahead of the player.
 	var target: TerrainChunk = null
 	for tile: TerrainChunk in _tiles():
-		if tile.resolution == TIERS[TIERS.size() - 1]["resolution"]:
+		if tile.resolution == _coarsest:
 			if target == null or tile.position.x > target.position.x:
 				target = tile
 	if target == null:
@@ -280,7 +333,7 @@ func _check_retiling_on_approach() -> void:
 	if arrived == null:
 		_fail("the tile vanished instead of gaining detail")
 		return
-	if arrived.resolution != TIERS[0]["resolution"]:
+	if arrived.resolution != _finest:
 		_fail("tile stayed at res %d after the player stood on it" % arrived.resolution)
 	if arrived.get_node_or_null("Collider") == null:
 		_fail("tile gained detail but no collision")
@@ -293,8 +346,8 @@ func _check_retiling_on_approach() -> void:
 ## The bug this was written to catch: an NPC standing still while the player
 ## wanders far away must keep its collision, because it is a physics body that
 ## falls through the world the instant its tile loses one. Without registering
-## as an anchor, the NPC's tile would retile down to a collisionless tier once
-## it falls outside every detail band measured from the player alone.
+## as an anchor, the NPC's tile would retile down to a collisionless resolution
+## once it falls outside every band measured from the camera alone.
 func _check_collision_anchor_survives_player_leaving() -> void:
 	var npc_spot := _player.global_position + Vector3(300.0, 0.0, 0.0)
 	var npc := Node3D.new()
@@ -307,16 +360,16 @@ func _check_collision_anchor_survives_player_leaving() -> void:
 	await _settle()
 
 	var cell := _manager._cell_at(Vector2(npc_spot.x, npc_spot.z))
-	if not _manager._active.has(cell) or _manager._active[cell]["tier"] != 0:
+	if not _manager._active.has(cell) or _manager._active[cell]["resolution"] != _finest:
 		_fail("registering an anchor did not bring its ground to full detail")
 	else:
 		print("anchor: registered far from the player, got full-detail ground immediately")
 
 	# Walk the player far away in the OPPOSITE direction — the anchor's tile is
-	# now outside every distance-based tier. It must survive anyway.
+	# now outside every screen-space band. It must survive anyway.
 	_player.global_position += Vector3(-500.0, 0.0, 0.0)
 	await _settle()
-	if not _manager._active.has(cell) or _manager._active[cell]["tier"] != 0:
+	if not _manager._active.has(cell) or _manager._active[cell]["resolution"] != _finest:
 		_fail("anchor's ground was freed or downgraded once the player left — an NPC here would fall through the world")
 	else:
 		print("anchor: ground survived the player walking 500 units away")
@@ -369,11 +422,12 @@ func _check_anchor_survives_continuous_movement() -> void:
 		_player.global_position = Vector3(cos(angle) * 15.0, 0.0, sin(angle) * 15.0)
 		await get_tree().process_frame
 
-		# NOT _active[cell]["tier"] == 0: that flag is set the instant a build
-		# is QUEUED, not when it finishes — with a batched, multi-frame build
-		# there is a real window where the manager already claims tier 0 but
-		# the TerrainChunk has no Collider yet. What actually stops an NPC
-		# falling through is the collider existing, so that is what this checks.
+		# NOT _active[cell]["resolution"] == finest: that flag is set the
+		# instant a build is QUEUED, not when it finishes — with a batched,
+		# multi-frame build there is a real window where the manager already
+		# claims full detail but the TerrainChunk has no Collider yet. What
+		# actually stops an NPC falling through is the collider existing, so
+		# that is what this checks.
 		var has_collision := false
 		if _manager._active.has(cell):
 			var chunk: Node = _manager._active[cell]["chunk"]
@@ -403,8 +457,7 @@ func _report_payoff() -> void:
 	var stats := _manager.debug_stats()
 	var resident: int = stats["vertices"]
 	# What the same ground would have cost built uniformly at full detail.
-	var finest: int = TIERS[0]["resolution"]
-	var uniform: int = stats["tiles"] * (finest + 1) * (finest + 1)
+	var uniform: int = stats["tiles"] * (_finest + 1) * (_finest + 1)
 	print("")
 	print("payoff: %d tiles resident, %d vertices" % [stats["tiles"], resident])
 	print("        uniform full detail would be %d vertices" % uniform)

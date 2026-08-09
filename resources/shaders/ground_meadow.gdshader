@@ -33,10 +33,24 @@ render_mode cull_back, diffuse_burley;
 //   micro    fine grain on top — stops large-scale flatness within a blotch
 //   detail   higher frequency still — a middle step between micro and speckle
 //   speckle  small bright/dark flecks — the last bit of "not a flat colour"
+//   turf     finer still — stands in for GrassField's blade geometry once it
+//            has stopped rendering, see note 3 below
 //   bump     same field, read as slope instead of colour — see note 2 above
+//
+// 3. THE TURF LAYER IS WHAT "THERE IS GRASS HERE" LOOKS LIKE WITHOUT BLADES.
+//    grass_manager.gd only builds actual blade MultiMeshes within a radius of
+//    the camera — past it, this material IS the ground's entire appearance,
+//    and a grass blade is a sliver a few centimetres wide: at any real
+//    distance it is already thinner than a pixel, so there is no resolution
+//    of blade geometry that fixes it, only aliasing that flickers as the
+//    camera moves. The fix is not to keep trying to draw blades, it is to
+//    stop and let a material carry the impression instead. turf is exactly
+//    that: a finer noise layer than speckle, faded by fwidth() (see [method
+//    fragment]) so it does not just relocate the same sub-pixel aliasing
+//    problem into the shader.
 
-uniform vec4 color_a : source_color = vec4(0.30, 0.44, 0.22, 1.0);
-uniform vec4 color_b : source_color = vec4(0.26, 0.39, 0.19, 1.0);
+uniform vec4 color_a : source_color = vec4(0.30, 0.68, 0.22, 1.0);
+uniform vec4 color_b : source_color = vec4(0.26, 0.60, 0.19, 1.0);
 uniform vec4 color_shadow : source_color = vec4(0.20, 0.30, 0.14, 1.0);
 uniform vec4 side_color : source_color = vec4(0.34, 0.28, 0.20, 1.0);
 
@@ -51,6 +65,22 @@ uniform float detail_scale = 2.0;
 uniform float detail_strength : hint_range(0.0, 1.0) = 0.12;
 uniform float speckle_scale = 3.2;
 uniform float speckle_strength : hint_range(0.0, 1.0) = 0.10;
+/// Stands in for individual blades once GrassField stops rendering them —
+/// see note 3 at the top. Deliberately much finer than speckle_scale: this is
+/// meant to read as "grass too far away to resolve as blades", not as another
+/// colour blotch.
+uniform float turf_scale = 9.0;
+uniform float turf_strength : hint_range(0.0, 1.0) = 0.75;
+/// Below this many noise cells per pixel (measured by fwidth, see [method
+/// fragment]), the turf layer fades itself out rather than aliasing. Higher
+/// means it gives up sooner — safer against flicker, but shortens how close
+/// the shader-only look extends before real blade geometry needs to take
+/// over. Lower risks visible shimmer on distant, fast-moving footage.
+uniform float turf_fade_start : hint_range(0.1, 3.0) = 0.5;
+uniform float turf_fade_end : hint_range(0.1, 4.0) = 2.0;
+/// How much the turf layer perturbs the surface normal to make blades look
+/// raised. Higher values make the micro-blade height more pronounced.
+uniform float turf_bump_strength : hint_range(0.0, 1.0) = 0.5;
 uniform float depth_strength : hint_range(0.0, 1.0) = 0.08;
 uniform float surface_roughness : hint_range(0.0, 1.0) = 0.95;
 
@@ -123,6 +153,40 @@ void fragment() {
 	float speckle = value_noise(p * speckle_scale + 91.7) - 0.5;
 	base *= 1.0 + speckle * speckle_strength;
 
+	// Turf layer: see note 3 at the top. fwidth(p * turf_scale) is how many
+	// noise cells one pixel currently spans — small close up (many pixels per
+	// cell, plenty of resolution), large far away (many cells per pixel,
+	// headed for aliasing). turf_fade rides that measurement down to 0 BEFORE
+	// the layer would start flickering, the same finite-difference spirit as
+	// the bump below but measuring screen-space rate of change instead of
+	// world-space slope.
+	//
+	// To look like raised grass blades rather than flat color, the turf layer
+	// also perturbs the shading normal at a finer scale than the main bump —
+	// this makes light catch the micro-texture as if blades are actually
+	// standing up. Applied only on top faces (upness) like the macro bump.
+	vec2 turf_p = p * turf_scale;
+	float turf_cells_per_px = fwidth(turf_p.x) + fwidth(turf_p.y);
+	float turf_fade = 1.0 - smoothstep(turf_fade_start, turf_fade_end, turf_cells_per_px);
+	float turf = value_noise(turf_p + 37.1) - 0.5;
+	// Directional component: grass leans — use different frequencies in X vs Z
+	// to create elongated streaks that read as blade direction.
+	float turf_x = value_noise(turf_p * vec2(2.0, 0.5) + 41.3) - 0.5;
+	float turf_z = value_noise(turf_p * vec2(0.5, 2.0) + 43.7) - 0.5;
+	turf = turf * 0.6 + (turf_x * 0.25 + turf_z * 0.15);
+
+	// Blade color: bright tips, dark base (ambient occlusion in crevices).
+	// Where turf is positive (blade tips), brighten; negative (crevices), darken.
+	vec3 turf_color = mix(color_shadow.rgb, color_a.rgb, turf + 0.5);
+	base += turf_color * turf_strength * turf_fade;
+
+	// Directional variance: enhance specularity along blade direction using view-aligned
+	// anisotropy. Where blades lean toward the camera view, they brighten slightly,
+	// creating a glitter effect that reads as actual blade structure.
+	float blade_aniso = abs(turf_x) + abs(turf_z);
+	float aniso_spec = pow(blade_aniso * 0.5 + 0.5, 3.0) * turf_fade;
+	base += aniso_spec * turf_strength * 0.2 * vec3(1.0);
+
 	// Pseudo-depth: modulate color based on a low-frequency "height" map.
 	// Slightly darker in "valleys", lighter on "peaks" for visual depth.
 	float height = fbm(p * macro_scale * 0.5, macro_octaves);
@@ -139,11 +203,24 @@ void fragment() {
 	// finite-difference approach Heightfield.normal_at uses to turn a height
 	// function into a slope. Only applied on top faces (upness) — a vertical
 	// side face has no "which way is this leaning" to speak of.
+	//
+	// Apply bump at two scales: macro (bump_scale) and micro (turf_scale) for
+	// the grass-blade appearance. The macro bump makes broad patches look uneven;
+	// the micro bump makes individual grass blades cast tiny shadows as if
+	// they are standing up off the ground.
 	float e = 0.35;
 	float h_dx = fbm((p + vec2(e, 0.0)) * bump_scale, 2) - fbm((p - vec2(e, 0.0)) * bump_scale, 2);
 	float h_dz = fbm((p + vec2(0.0, e)) * bump_scale, 2) - fbm((p - vec2(0.0, e)) * bump_scale, 2);
 	vec3 bumped_world_normal = normalize(world_normal - vec3(h_dx, 0.0, h_dz) * bump_strength);
-	vec3 shading_normal_world = mix(world_normal, bumped_world_normal, upness);
+	// Micro-bump for turf: finer scale, so it reads as grass-blade height
+	// variation rather than terrain unevenness. Faded the same way the turf
+	// color is, so it vanishes with the layer.
+	float e_turf = 0.15;
+	float h_turf_dx = value_noise((p + vec2(e_turf, 0.0)) * turf_scale) - value_noise((p - vec2(e_turf, 0.0)) * turf_scale);
+	float h_turf_dz = value_noise((p + vec2(0.0, e_turf)) * turf_scale) - value_noise((p - vec2(0.0, e_turf)) * turf_scale);
+	vec3 turf_bump = normalize(world_normal - vec3(h_turf_dx, 0.0, h_turf_dz) * turf_bump_strength * turf_fade);
+	vec3 final_bump = normalize(bumped_world_normal + (turf_bump - world_normal) * turf_fade);
+	vec3 shading_normal_world = mix(world_normal, final_bump, upness);
 	NORMAL = normalize((VIEW_MATRIX * vec4(shading_normal_world, 0.0)).xyz);
 
 	ROUGHNESS = surface_roughness;

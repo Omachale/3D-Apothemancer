@@ -39,17 +39,42 @@ const GRASS_SCRIPT := preload("res://scripts/terrain/grass_field.gd")
 ## visual tuning knob — changing it reshuffles where chunk boundaries fall
 ## but should not change what the result looks like.
 @export var chunk_size := 20.0
-## Distance from the player at which a chunk starts loading. Sized to clear
-## everything the isometric camera can show at a bit past the default zoom
-## (camera_rig.gd: distance 20, pitch -45, fov 45 puts the far edge of the
-## view roughly 30-35 units out at default zoom), in any direction the player
-## rotates the camera to — padded well past that so nothing pops in mid-frame
-## even zoomed out further.
+## Distance from the CAMERA at which a chunk starts loading, AT THE DEFAULT
+## ZOOM. The radius actually used grows with the camera's current zoom — see
+## [member radius_per_distance] — because this alone only covers one specific
+## framing. Left as a floor rather than replaced outright so close-up framing
+## (inspect mode, a very tight zoom) still gets a sensible minimum patch.
 @export var load_radius := 50.0
-## Distance at which a loaded chunk is freed entirely. Kept a full chunk_size
-## or more above load_radius so a player standing near the boundary, drifting
-## a step back and forth, cannot thrash a chunk in and out repeatedly.
+## Distance at which a loaded chunk is freed entirely, at the default zoom —
+## same floor-not-replacement relationship to the effective radius as
+## [member load_radius]. Kept a full chunk_size or more above it so a player
+## standing near the boundary, drifting a step back and forth, cannot thrash a
+## chunk in and out repeatedly; that gap is preserved at every zoom level, not
+## just the default one — see [method _effective_radii].
 @export var unload_radius := 70.0
+## World units the load radius grows per unit of camera zoom distance beyond
+## the default. Without this, load_radius is only actually sized for ONE
+## specific zoom level: zoomed further out, the visible ground footprint grows
+## roughly with camera distance but the grass patch does not, so it shrinks to
+## a disc that no longer reaches the edges of the screen. Because ground near
+## the camera fills proportionally more of the screen than ground toward the
+## horizon (ordinary perspective foreshortening), an undersized disc centred
+## on the player does not read as "a small circle" — it reads as a wedge
+## anchored near the bottom of the screen and tapering toward the player,
+## which is exactly the "triangle of grass" artifact this exists to prevent.
+## Same fix, same reasoning, as rain.gd's box_size_per_distance.
+@export var radius_per_distance := 2.5
+## Hard ceiling on the effective radius, however far radius_per_distance would
+## otherwise stretch it at extreme zoom-out. Actual blade geometry stops being
+## worth its cost well before that: a grass blade is a few centimetres wide,
+## so past a fairly modest distance it is already thinner than a pixel and
+## reads as aliasing, not detail — no amount of radius fixes that, only more
+## flicker. ground_meadow.gdshader's turf layer is what carries the "there is
+## grass here" appearance past this point instead, at zero geometry cost
+## regardless of how far it needs to reach. Keeping this independent of
+## load_radius means raising the base radius for some other reason cannot
+## silently raise this ceiling too.
+@export var max_radius := 120.0
 ## How often to re-scan which chunks should be loaded/freed. The player moves
 ## slowly relative to chunk_size, so there is no need to check every frame.
 @export var check_interval := 0.25
@@ -123,45 +148,82 @@ func _process(delta: float) -> void:
 func _rescan() -> void:
 	if Game.player == null:
 		return
-	var p := Game.player.global_position
-	if absf(p.x) > map_half_extent or absf(p.z) > map_half_extent:
+	# Streamed from the CAMERA, matching terrain_manager.gd — see the note in
+	# its _rescan for why. Grass is a smaller version of the same problem: at
+	# altitude the ground under the player's feet is not what is filling the
+	# screen, so chunks need to load around what the camera can see, not around
+	# where the player happens to be standing.
+	var cam := Game.camera_rig.global_position if Game.camera_rig else Game.player.global_position
+	if absf(cam.x) > map_half_extent or absf(cam.z) > map_half_extent:
 		return
-	var player_xz := Vector2(p.x, p.z)
+	var view_xz := Vector2(cam.x, cam.z)
 	# Half the chunk's diagonal, so range checks are against the nearest
 	# corner of a chunk rather than its centre — a chunk whose centre is just
 	# past a radius can still have a corner inside it.
 	var half_diag := chunk_size * 0.7072
+	var radii := _effective_radii()
 
-	_queue_new_chunks(player_xz, half_diag)
-	_free_out_of_range_chunks(player_xz, half_diag)
+	_queue_new_chunks(view_xz, half_diag, radii[0])
+	_free_out_of_range_chunks(view_xz, half_diag, radii[1])
 
 
-func _queue_new_chunks(player_xz: Vector2, half_diag: float) -> void:
-	var p := player_xz
-	var cell_min_x := int(floor((p.x - load_radius) / chunk_size))
-	var cell_max_x := int(floor((p.x + load_radius) / chunk_size))
-	var cell_min_z := int(floor((p.y - load_radius) / chunk_size))
-	var cell_max_z := int(floor((p.y + load_radius) / chunk_size))
+## The load/unload radii actually in use right now: [member load_radius] and
+## [member unload_radius] scaled up for the camera's current zoom — see
+## [member radius_per_distance] — then capped at [member max_radius]. The gap
+## between the two (the anti-thrash hysteresis band) is preserved at every
+## zoom level rather than only at the default, since scaling each
+## independently could let zooming in shrink that gap below chunk_size and
+## start thrashing; the cap is applied after that so it shrinks the whole band
+## rather than eating the margin first.
+func _effective_radii() -> Array:
+	var distance := 20.0
+	if Game.camera_rig and Game.camera_rig.has_method("get_active_distance"):
+		distance = Game.camera_rig.get_active_distance()
+	var load := minf(maxf(load_radius, distance * radius_per_distance), max_radius)
+	var unload := minf(load + (unload_radius - load_radius), max_radius + (unload_radius - load_radius))
+	return [load, unload]
+
+
+func _queue_new_chunks(view_xz: Vector2, half_diag: float, radius: float) -> void:
+	var p := view_xz
+	var cell_min_x := int(floor((p.x - radius) / chunk_size))
+	var cell_max_x := int(floor((p.x + radius) / chunk_size))
+	var cell_min_z := int(floor((p.y - radius) / chunk_size))
+	var cell_max_z := int(floor((p.y + radius) / chunk_size))
 
 	for cx in range(cell_min_x, cell_max_x + 1):
 		for cz in range(cell_min_z, cell_max_z + 1):
 			var cell := Vector2i(cx, cz)
 			if _active.has(cell) or _pending.has(cell):
 				continue
-			if p.distance_to(_cell_center(cell)) - half_diag > load_radius:
+			if p.distance_to(_cell_center(cell)) - half_diag > radius:
 				continue
 			_pending[cell] = true
 			_build_queue.append(cell)
 
 
-func _free_out_of_range_chunks(player_xz: Vector2, half_diag: float) -> void:
+func _free_out_of_range_chunks(view_xz: Vector2, half_diag: float, radius: float) -> void:
 	var to_free: Array = []
 	for cell in _active.keys():
-		if player_xz.distance_to(_cell_center(cell)) - half_diag > unload_radius:
+		if view_xz.distance_to(_cell_center(cell)) - half_diag > radius:
 			to_free.append(cell)
 	for cell in to_free:
 		var field: GrassField = _active[cell]
 		_active.erase(cell)
+		# A chunk can still be mid-build here — _spawn() adds to _active before
+		# the field's own _build() coroutine (which yields across frames, see
+		# grass_field.gd's samples_per_batch) has finished. Freeing it out from
+		# under that coroutine means it never reaches its own `built.emit()`, so
+		# without this, _on_built() never fires: _building stays incremented and
+		# _pending[cell] never clears. Do that bookkeeping here instead, since
+		# the signal never will. Enough of these leaks (max_concurrent_builds
+		# worth) permanently wedges _drain_build_queue — no new chunk can ever
+		# start — which is exactly the "grass stopped streaming" symptom this
+		# fixes: wander far enough, mid-build chunks get freed behind you, and
+		# eventually every build slot is leaked this way.
+		if _pending.has(cell):
+			_pending.erase(cell)
+			_building = maxi(_building - 1, 0)
 		field.queue_free()
 
 

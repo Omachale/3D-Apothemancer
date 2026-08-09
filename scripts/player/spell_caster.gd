@@ -54,9 +54,15 @@ var phase: Phase = Phase.READY
 var weight := 0.0
 ## 0 = drawn back (windup), 1 = thrust out (release). The animator reads this.
 var extend := 0.0
+## Which spell is in flight through the current cast — an arbitrary tag this
+## class never interprets, only carries. A listener on [signal cast_released]
+## (see player_attacks.gd) reads it to know which projectile to spawn, since
+## this state machine deliberately knows nothing about spell effects.
+var current_spell: String = "primary"
 
 var _timer := 0.0
 var _buffered := 0.0
+var _buffered_spell: String = "primary"
 var _skeleton: Skeleton3D = null
 var _bone_id := -1
 
@@ -76,14 +82,18 @@ func _process(delta: float) -> void:
 	_update_pose_values(delta)
 
 
-## Request a cast. Returns true if it started or was buffered.
-func try_cast() -> bool:
+## Request a cast. [param spell] is an opaque tag carried through to
+## [signal cast_released] via [member current_spell] — this class never reads
+## it itself. Returns true if it started or was buffered.
+func try_cast(spell: String = "primary") -> bool:
 	if phase == Phase.READY:
+		current_spell = spell
 		_begin_windup()
 		return true
 	# Late in the cast, buffer instead of dropping the press.
 	if phase == Phase.RECOVER or phase == Phase.COOLDOWN:
 		_buffered = input_buffer
+		_buffered_spell = spell
 		return true
 	return false
 
@@ -142,6 +152,7 @@ func _advance(delta: float) -> void:
 				_timer = 0.0
 				if _buffered > 0.0:
 					_buffered = 0.0
+					current_spell = _buffered_spell
 					_begin_windup()
 
 

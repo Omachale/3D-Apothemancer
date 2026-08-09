@@ -1,0 +1,40 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/npc/projectile.gd" id="1"]
+[ext_resource type="Material" path="res://resources/materials/blue_crackle.tres" id="2"]
+[ext_resource type="PackedScene" path="res://scenes/player/BlueExplosion.tscn" id="3"]
+
+[sub_resource type="SphereShape3D" id="BoltShape"]
+radius = 0.4
+
+[sub_resource type="SphereMesh" id="BoltMesh"]
+radius = 0.36
+height = 0.72
+radial_segments = 12
+rings = 6
+
+[node name="BlueBomb" type="Area3D"]
+collision_layer = 32
+collision_mask = 11
+script = ExtResource("1")
+speed = 15.4
+hit_mask = 11
+apply_knockback_on_hit = false
+explosion_scene = ExtResource("3")
+pulse = 0.28
+pulse_speed = 20.0
+spin_speed = 6.0
+
+[node name="Collider" type="CollisionShape3D" parent="."]
+shape = SubResource("BoltShape")
+
+[node name="Orb" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoltMesh")
+material_override = ExtResource("2")
+cast_shadow = 0
+
+[node name="Glow" type="OmniLight3D" parent="."]
+light_color = Color(0.35, 0.65, 1, 1)
+light_energy = 4.0
+omni_range = 6.0
+shadow_enabled = false

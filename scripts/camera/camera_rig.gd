@@ -173,6 +173,13 @@ func get_active_distance() -> float:
 	return lerpf(distance, inspect_distance, _inspect)
 
 
+## The actual Camera3D, for anything that needs its real position or FOV
+## rather than the rig's — terrain_manager.gd's screen-space LOD test, chiefly,
+## since the rig's own origin is the point being looked AT, not looked FROM.
+func get_camera() -> Camera3D:
+	return _camera
+
+
 func _apply_rig_rotation() -> void:
 	if not is_inside_tree():
 		return

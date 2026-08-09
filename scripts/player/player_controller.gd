@@ -24,6 +24,23 @@ signal state_changed(new_state: State)
 ## Shift toggles run on/off, as specced. Flip this for hold-to-run instead.
 @export var run_is_toggle := true
 
+@export_group("Debug Fly")
+## TESTING TOOL, not a character ability — see terrain_manager.gd /
+## grass_manager.gd's camera-driven streaming and screen-space LOD work.
+## Holding "debug_fly" (Space) climbs at this rate and suspends gravity; letting
+## go hands straight back to normal falling from whatever height and vertical
+## speed the player was at, rather than snapping to a hover. There is
+## deliberately no ceiling and no way to stop mid-air on purpose: this exists
+## to let a person LOOK at how streaming and detail behave at altitude, not to
+## be a designed movement mechanic. A real flight ability, if one gets
+## designed later, is a different piece of work — controlled descent, limits,
+## animation state, and probably resource cost.
+@export_range(1.0, 60.0, 0.5) var fly_lift_speed := 20.0
+## How quickly vertical speed ramps toward fly_lift_speed while held, and
+## toward 0 the instant it is released (gravity takes over from there).
+## Purely a smoothing knob; kept short so it does not feel laggy.
+@export_range(0.5, 30.0, 0.5) var fly_lift_acceleration := 40.0
+
 @export_group("Aiming")
 ## When true the model faces the mouse instead of the direction of travel.
 ## Off for now: strafing only makes sense once there is something to aim at.
@@ -38,6 +55,13 @@ signal state_changed(new_state: State)
 ## Yaw correction applied to the visual only, in degrees, in case an imported
 ## mesh does not face Godot's -Z forward. Mage.glb already does, hence 0.
 @export var model_yaw_offset := 0.0
+
+## Radius registered with TerrainManager.register_collision_anchor — see
+## _ready(). Sized to comfortably outrun the player between terrain rescans:
+## run_speed (30) x check_interval (0.25s default) is ~7.5 units of drift, and
+## this needs to cover the anchor's own bookkeeping lag on top of that, so it
+## is padded well past the worst case rather than tuned to the exact number.
+@export var ground_anchor_radius := 16.0
 
 ## Where on the ground the mouse currently points, at the player's foot height.
 var aim_point := Vector3.ZERO
@@ -67,6 +91,22 @@ func _ready() -> void:
 	collision_layer = Layers.PLAYER
 	collision_mask = Layers.SOLID
 	Game.register_player(self)
+	# Terrain now streams around the CAMERA, not the player (see
+	# terrain_manager.gd's _rescan) — the two used to be the same point for
+	# this purpose, since distance-from-player was always exactly 0 under the
+	# player's own feet. They are no longer guaranteed to coincide: zoomed far
+	# out, or at altitude once flying exists, the camera can sit well away from
+	# the player in real 3D distance, and without this the ground the player is
+	# actually standing on could retile down to a tier with no collision out
+	# from under them — the same silent fall-through NPCs were registered as
+	# anchors to prevent (see npc_controller.gd's _ready()).
+	if Game.terrain_manager:
+		Game.terrain_manager.register_collision_anchor(self, ground_anchor_radius)
+
+
+func _exit_tree() -> void:
+	if Game.terrain_manager:
+		Game.terrain_manager.unregister_collision_anchor(self)
 
 
 func _physics_process(delta: float) -> void:
@@ -84,10 +124,15 @@ func _physics_process(delta: float) -> void:
 
 	_update_run_toggle()
 	_update_aim()
-	if caster and Input.is_action_just_pressed("cast_primary"):
-		caster.try_cast()
+	if caster:
+		if Input.is_action_just_pressed("cast_primary"):
+			caster.try_cast("primary")
+		elif Input.is_action_just_pressed("cast_secondary"):
+			caster.try_cast("secondary")
 
-	if not is_on_floor():
+	if Input.is_action_pressed("debug_fly"):
+		velocity.y = move_toward(velocity.y, fly_lift_speed, fly_lift_acceleration * delta)
+	elif not is_on_floor():
 		velocity.y -= _gravity * gravity_scale * delta
 
 	var direction := _get_move_direction()

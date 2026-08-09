@@ -48,6 +48,12 @@ enum State { IDLE, WALK, ATTACK }
 ## their feet, so bolts arrive at chest height.
 @export_range(0.0, 3.0, 0.05) var aim_height := 1.1
 
+@export_group("Knockback")
+## No hit-reaction animation exists for these rigs (only Idle/Walk/Gun_Shoot
+## ship on the Quaternius characters), so a hit is a pure physical shove —
+## nothing else changes about the NPC's state or behaviour.
+@export_range(0.5, 30.0, 0.5) var knockback_decay := 5.0
+
 @export_group("Animation")
 @export var idle_clip := "Idle"
 @export var walk_clip := "Walk"
@@ -68,6 +74,11 @@ var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 
 var _attack_timer := 0.0
 var _cooldown := 0.0
 var _bolt_fired := false
+## Decaying external shove, summed on top of whatever the current state (idle
+## /walk/attack) sets velocity.x/z to — see [method _physics_process] and
+## player_controller.gd's identical split for why this stays separate rather
+## than being folded into the state logic itself.
+var _knockback := Vector3.ZERO
 
 
 func _ready() -> void:
@@ -134,6 +145,10 @@ func _physics_process(delta: float) -> void:
 		State.ATTACK:
 			_process_attack(delta)
 
+	velocity.x += _knockback.x
+	velocity.z += _knockback.z
+	_knockback = _knockback.lerp(Vector3.ZERO, 1.0 - exp(-knockback_decay * delta))
+
 	move_and_slide()
 
 
@@ -146,6 +161,16 @@ func _ground_ready() -> bool:
 	if terrain_manager == null:
 		return true
 	return terrain_manager.has_ground_at(global_position.x, global_position.z)
+
+
+## Shove this NPC. Same signature as player_controller.gd's version, since
+## both are called by the same projectile.gd hit check — but no lift is used
+## here, and there is no animation reaction to trigger (see [member
+## knockback_decay]'s note).
+func apply_knockback(direction: Vector3, force: float, _lift := 0.0) -> void:
+	var flat := Vector3(direction.x, 0.0, direction.z)
+	if flat.length_squared() > 0.001:
+		_knockback += flat.normalized() * force
 
 
 func _process_idle(delta: float) -> void:

@@ -1,0 +1,37 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/npc/projectile.gd" id="1"]
+[ext_resource type="Material" path="res://resources/materials/red_bolt.tres" id="2"]
+
+[sub_resource type="SphereShape3D" id="BoltShape"]
+radius = 0.4
+
+[sub_resource type="SphereMesh" id="BoltMesh"]
+radius = 0.36
+height = 0.72
+radial_segments = 12
+rings = 6
+
+[node name="RedBolt" type="Area3D"]
+collision_layer = 32
+collision_mask = 11
+script = ExtResource("1")
+speed = 35.2
+hit_mask = 11
+elongation = 2.4
+knockback_force = 16.0
+knockback_lift = 4.0
+
+[node name="Collider" type="CollisionShape3D" parent="."]
+shape = SubResource("BoltShape")
+
+[node name="Orb" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoltMesh")
+material_override = ExtResource("2")
+cast_shadow = 0
+
+[node name="Glow" type="OmniLight3D" parent="."]
+light_color = Color(1, 0.25, 0.15, 1)
+light_energy = 4.0
+omni_range = 6.0
+shadow_enabled = false
