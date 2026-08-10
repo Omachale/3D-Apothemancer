@@ -1,43 +1,50 @@
 extends Node
 
 ## Checks terrain_manager.gd streams ground correctly as the player moves: the
-## right tiles exist, at the right resolution, collision only where it is
-## needed, and — the whole point of the exercise — the amount resident stays
-## FLAT no matter how far the player walks.
+## right tiles exist, on the right ring, collision only where it is needed, no
+## holes in the ground while rings swap over, and — the whole point of the
+## exercise — the amount resident stays FLAT no matter how far the player walks.
 ##
 ## Run as a SCENE rather than with --script, because TerrainManager reaches the
 ## player through the Game autoload and autoloads are not set up for --script:
 ##   Godot --headless res://scenes/dev/VerifyTerrainManager.tscn
 ## Exits non-zero if any check fails.
 ##
-## CALIBRATED AGAINST THE RUNTIME VIEWPORT, not hardcoded distances. Detail is
-## now chosen from projected screen size (see terrain_manager.gd's class doc),
-## so the distance at which any given resolution becomes sufficient depends on
-## the actual viewport height this test happens to run at — headless Godot's
-## window size is not something this file should assume. _setup_manager()
-## reads the real viewport and picks max_screen_error_px so the resolution
-## bands land at known, well-separated distances regardless of environment,
-## the same way a designer tuning the slider by eye would arrive at a number
-## for their own screen.
+## CALIBRATED AGAINST THE RUNTIME VIEWPORT, not hardcoded distances. Which ring
+## a tile lands on is chosen from projected screen size (see terrain_manager.gd's
+## class doc), so the distance at which any given ring starts depends on the
+## actual viewport height this test happens to run at — headless Godot's window
+## size is not something this file should assume. _setup_manager() reads the
+## real viewport and picks max_screen_error_px so the ring boundaries land at
+## known, well-separated distances regardless of environment, the same way a
+## designer tuning the slider by eye would arrive at a number for their own
+## screen.
+##
+## TILE_RESOLUTION is deliberately far below production's 32. It is a ratio
+## dial, not a quality one (see terrain_manager.gd), so lowering it changes
+## nothing this file is checking while cutting every tile from 1089 vertices to
+## 81 — which is the difference between a test that runs and one that crawls.
 
 const CHUNK_SIZE := 32.0
-## Ascending (coarsest first), matching terrain_manager.gd's convention.
-const RESOLUTIONS: Array[int] = [4, 8, 16, 32]
-## Where the coarsest resolution's own band starts, in world units — this is
-## the number _setup_manager() solves max_screen_error_px for. Each finer
-## resolution's band then starts at half the previous, by the formula's own
-## inverse-proportionality (see terrain_manager.gd's _resolution_for): 128,
-## 64, 32, 16. Comfortably separated for a headless test to tell apart.
-const COARSEST_BAND_START := 128.0
-const HORIZON := 200.0
+const TILE_RESOLUTION := 8
+const RING_COUNT := 4
+## Where the OUTERMOST ring starts, in world units — this is the number
+## _setup_manager() solves max_screen_error_px for. Each ring in then starts at
+## half the previous, by the formula's own inverse-proportionality (see
+## terrain_manager.gd's _ring_radius): 160, 80, 40. Comfortably separated for a
+## headless test to tell apart.
+const OUTER_RING_START := 160.0
+## Generous relative to OUTER_RING_START on purpose: the outermost ring is
+## whatever is left between its own inner edge and the horizon, so a horizon
+## that barely clears that edge leaves it empty and there is no last ring to
+## check.
+const HORIZON := 600.0
+const UNLOAD_MARGIN := 64.0
 
 var _fails := 0
 var _player: Node3D = null
 var _manager: TerrainManager = null
-## Finest resolution's band starts here or closer — used by every check that
-## used to compare against "TIERS[0]".
-var _finest: int = RESOLUTIONS[RESOLUTIONS.size() - 1]
-var _coarsest: int = RESOLUTIONS[0]
+var _coarsest: int = RING_COUNT - 1
 
 
 func _ready() -> void:
@@ -64,12 +71,14 @@ func _run() -> void:
 	await _settle()
 	_check_ground_under_player()
 	_check_has_ground_at_requires_real_collider()
-	_check_detail_falls_off_with_distance()
+	_check_rings_grow_with_distance()
+	_check_no_overlapping_rings()
 	_check_collision_only_near()
 	await _check_streaming_stays_flat()
-	await _check_retiling_on_approach()
+	await _check_ground_never_gaps_on_approach()
 	await _check_collision_anchor_survives_player_leaving()
 	await _check_anchor_survives_continuous_movement()
+	await _check_horizon_extends_cheaply()
 	_report_payoff()
 
 	print("")
@@ -85,20 +94,21 @@ func _fail(msg: String) -> void:
 	_fails += 1
 
 
-## Builds a manager whose resolution bands land at known distances no matter
-## what viewport this happens to run in. Game.camera_rig is never set in this
-## test, so terrain_manager.gd's _view_camera() falls back to its bootstrap
-## approximation of the rig's default framing (player position + a fixed
-## offset, 45 degree FOV) — this reads that same fallback back out rather than
-## duplicating it, so the two cannot drift apart silently.
+## Builds a manager whose ring boundaries land at known distances no matter what
+## viewport this happens to run in. Game.camera_rig is never set in this test, so
+## terrain_manager.gd's _view_camera() falls back to its bootstrap approximation
+## of the rig's default framing (player position + a fixed offset, 45 degree
+## FOV) — this reads that same fallback back out rather than duplicating it, so
+## the two cannot drift apart silently.
 func _setup_manager(field: Heightfield) -> TerrainManager:
 	var manager := TerrainManager.new()
 	manager.heightfield = field
 	manager.chunk_size = CHUNK_SIZE
-	manager.resolutions = RESOLUTIONS.duplicate()
-	manager.collision_resolution_minimum = _finest
+	manager.tile_resolution = TILE_RESOLUTION
+	manager.ring_count = RING_COUNT
+	manager.collision_level_maximum = 0
 	manager.horizon_distance = HORIZON
-	manager.unload_margin = 32.0
+	manager.unload_margin = UNLOAD_MARGIN
 	manager.max_concurrent_builds = 4
 	# Rescan every frame. At the production 0.25s the manager has not yet
 	# noticed the player moved when _settle() looks, so _settle() concludes the
@@ -114,9 +124,10 @@ func _setup_manager(field: Heightfield) -> TerrainManager:
 		viewport_h = 600.0 # Headless without a window at all; keep the test alive.
 	var fov_rad := deg_to_rad(45.0) # Matches _view_camera()'s bootstrap fallback.
 	var k := viewport_h / (2.0 * tan(fov_rad * 0.5))
-	# Solving _resolution_for's own formula for the error budget that puts the
-	# COARSEST resolution's band boundary at COARSEST_BAND_START.
-	manager.max_screen_error_px = CHUNK_SIZE * k / (float(_coarsest) * COARSEST_BAND_START)
+	# Solving _ring_radius's own formula for the error budget that puts the
+	# OUTERMOST ring's inner edge at OUTER_RING_START.
+	var coarsest_spacing := CHUNK_SIZE * float(1 << _coarsest) / float(TILE_RESOLUTION)
+	manager.max_screen_error_px = coarsest_spacing * k / OUTER_RING_START
 	return manager
 
 
@@ -142,56 +153,65 @@ func _tiles() -> Array:
 	return out
 
 
-## Whatever else happens, there must be ground under the player's feet, at full
-## detail, that they can stand on.
-##
-## Looks up the ONE cell the player's exact position falls in (same lookup
-## has_ground_at() itself does), not every tile whose bounds happen to reach
-## that point. Those are not the same thing here: detail is keyed to the
-## CAMERA now, not the player (see terrain_manager.gd's _rescan), and the
-## bootstrap camera fallback used when no rig is registered sits at a diagonal
-## offset from the player. A player positioned exactly on a shared corner of
-## four cells — which this test's default Vector3.ZERO start is — can
-## therefore have neighbouring corner tiles at genuinely different distances
-## from the camera and, correctly, different resolutions. Only the specific
-## cell the player is standing IN is required to be full detail.
+## Which ring a built tile is on, read back from the only thing that records it
+## on the tile itself — its world size.
+func _level_of(tile: TerrainChunk) -> int:
+	return int(round(log(tile.size / CHUNK_SIZE) / log(2.0)))
+
+
+## Whether any built tile at all covers this world XZ point. NOT the same
+## question as has_ground_at(), which additionally demands collision — this is
+## about whether there is a visible hole in the ground.
+func _covered(x: float, z: float) -> bool:
+	for tile: TerrainChunk in _tiles():
+		var half: float = tile.size * 0.5
+		if absf(x - tile.position.x) <= half and absf(z - tile.position.z) <= half:
+			return true
+	return false
+
+
+## Whatever else happens, there must be ground under the player's feet, on the
+## innermost ring, that they can stand on.
 func _check_ground_under_player() -> void:
 	var p := _player.global_position
 	if not _manager.has_ground_at(p.x, p.z):
-		_fail("no full-detail ground under the player")
-	var cell := _manager._cell_at(Vector2(p.x, p.z))
+		_fail("no collidable ground under the player")
+	if not _covered(p.x, p.z):
+		_fail("no tile covers the player's position at all")
 	var found := false
 	for tile: TerrainChunk in _tiles():
-		if Vector2i(int(tile.position.x), int(tile.position.z)) == Vector2i(
-				int((cell.x + 0.5) * CHUNK_SIZE), int((cell.y + 0.5) * CHUNK_SIZE)):
+		var half: float = tile.size * 0.5
+		if absf(p.x - tile.position.x) <= half and absf(p.z - tile.position.z) <= half:
 			found = true
-			if tile.get_node_or_null("Collider") == null:
+			if _level_of(tile) != 0:
+				_fail("the player is standing on a ring-%d tile, not the innermost" % _level_of(tile))
+			elif tile.get_node_or_null("Collider") == null:
 				_fail("the tile under the player has no collision")
-			if tile.resolution != _finest:
-				_fail("the tile under the player is not at full detail")
-	if not found:
-		_fail("no tile covers the player's position at all")
+	if found:
+		print("under the player: innermost ring, collision present")
 
 
 ## has_ground_at() must reflect a REAL collider existing, not just the
 ## manager's intent to build one. This is the exact gap that let NPCs and the
 ## player start falling under gravity before their tile's async build had
 ## actually produced a Collider — a caller trusting an earlier, weaker
-## version of this method (checking only _active[cell]["tier"] == 0, set the
+## version of this method (checking only the manager's own bookkeeping, set the
 ## instant a build is QUEUED) would see "ground ready" during that window and
 ## start moving into ground that was not really there yet.
 func _check_has_ground_at_requires_real_collider() -> void:
-	var spot := _player.global_position + Vector3(400.0, 0.0, 400.0)
-	var cell := _manager._cell_at(Vector2(spot.x, spot.z))
+	# Far outside the horizon, so nothing real is built here to confuse the
+	# fake tile planted below.
+	var spot := _player.global_position + Vector3(4000.0, 0.0, 4000.0)
+	var key := _manager._key(_manager._cell_at(Vector2(spot.x, spot.z), 0), 0)
 	if _manager.has_ground_at(spot.x, spot.z):
-		_fail("has_ground_at() true for a cell with no tile built at all")
+		_fail("has_ground_at() true for a spot with no tile built at all")
 
 	# A tile whose bookkeeping claims collision but has no Collider (mid-build,
 	# or a coarse tile masquerading) must still read as not-ready.
 	var fake_chunk := Node3D.new()
 	fake_chunk.name = "FakeTile"
 	_manager.add_child(fake_chunk)
-	_manager._active[cell] = {"chunk": fake_chunk, "resolution": _finest, "collision": true}
+	_manager._active[key] = {"chunk": fake_chunk, "level": 0, "collision": true}
 	if _manager.has_ground_at(spot.x, spot.z):
 		_fail("has_ground_at() true for a tile with no Collider child")
 
@@ -204,56 +224,83 @@ func _check_has_ground_at_requires_real_collider() -> void:
 	else:
 		print("has_ground_at(): correctly requires an actual Collider, not just bookkeeping")
 
-	_manager._active.erase(cell)
+	_manager._active.erase(key)
 	fake_chunk.queue_free()
-	print("under the player: full detail, collision present")
 
 
-## The central claim of the whole design: further away means fewer vertices.
-func _check_detail_falls_off_with_distance() -> void:
-	var by_res := {}
+## The central claim of the whole design: further away means BIGGER tiles, so
+## the same ground costs fewer of them.
+func _check_rings_grow_with_distance() -> void:
+	var by_level := {}
 	for tile: TerrainChunk in _tiles():
 		var d := Vector2(tile.position.x, tile.position.z).distance_to(
 			Vector2(_player.global_position.x, _player.global_position.z))
-		var res: int = tile.resolution
-		if not by_res.has(res):
-			by_res[res] = {"count": 0, "min_d": INF, "max_d": 0.0}
-		by_res[res]["count"] += 1
-		by_res[res]["min_d"] = minf(by_res[res]["min_d"], d)
-		by_res[res]["max_d"] = maxf(by_res[res]["max_d"], d)
+		var level := _level_of(tile)
+		if not by_level.has(level):
+			by_level[level] = {"count": 0, "min_d": INF, "max_d": 0.0, "size": tile.size}
+		by_level[level]["count"] += 1
+		by_level[level]["min_d"] = minf(by_level[level]["min_d"], d)
+		by_level[level]["max_d"] = maxf(by_level[level]["max_d"], d)
 
-	var seen: Array = by_res.keys()
+	var seen: Array = by_level.keys()
 	seen.sort()
-	seen.reverse() # Finest first.
-	var previous_max := -1.0
-	for res: int in seen:
-		var info: Dictionary = by_res[res]
-		print("  res %2d: %3d tiles, %.0f to %.0f units away" % [
-			res, info["count"], info["min_d"], info["max_d"]])
-		# Each coarser band must start beyond where the finer one started.
-		if info["min_d"] < previous_max - CHUNK_SIZE:
-			_fail("res %d tiles appear closer than the finer band above them" % res)
-		previous_max = info["min_d"]
-	if seen.size() != RESOLUTIONS.size():
-		_fail("expected %d detail bands, found %d" % [RESOLUTIONS.size(), seen.size()])
-	print("detail falls off with distance across %d bands" % seen.size())
+	var previous_min := -1.0
+	for level: int in seen:
+		var info: Dictionary = by_level[level]
+		print("  ring %d (%4.0f-unit tiles): %3d tiles, %.0f to %.0f units away" % [
+			level, info["size"], info["count"], info["min_d"], info["max_d"]])
+		# Each ring out must START further than the one inside it. Compared on
+		# the nearest tile of each ring, not the furthest: ring regions are
+		# nested BOXES, so a corner of an inner ring reaches further than the
+		# near edge of the ring outside it, and that is correct rather than a
+		# fault.
+		if info["min_d"] <= previous_min:
+			_fail("ring %d starts no further out than the ring inside it" % level)
+		previous_min = info["min_d"]
+	if seen.size() != RING_COUNT:
+		_fail("expected %d rings, found %d" % [RING_COUNT, seen.size()])
+	else:
+		print("tiles grow with distance across all %d rings" % seen.size())
+
+
+## Rings must TILE the ground, not overlap it. Two tiles covering the same spot
+## means z-fighting and double the cost; a gap means a hole. The nested-box
+## region maths in _compute_regions exists precisely to make both impossible,
+## so this checks it actually does.
+func _check_no_overlapping_rings() -> void:
+	var tiles := _tiles()
+	var overlaps := 0
+	# Sample the centre of every tile and confirm exactly one tile covers it.
+	for tile: TerrainChunk in tiles:
+		var covering := 0
+		for other: TerrainChunk in tiles:
+			var half: float = other.size * 0.5
+			if absf(tile.position.x - other.position.x) < half \
+					and absf(tile.position.z - other.position.z) < half:
+				covering += 1
+		if covering != 1:
+			overlaps += 1
+	if overlaps > 0:
+		_fail("%d tile centres are covered by more than one tile — rings overlap" % overlaps)
+	else:
+		print("rings tile the ground exactly: no point covered twice")
 
 
 ## Collision is a large share of a tile's cost, so it must exist only where the
-## player could actually stand.
+## player could actually stand — the innermost ring, plus anchors (none yet).
 func _check_collision_only_near() -> void:
 	var with_collision := 0
 	var without := 0
 	for tile: TerrainChunk in _tiles():
 		if tile.get_node_or_null("Collider") != null:
 			with_collision += 1
-			if tile.resolution != _finest:
-				_fail("a distant tile built collision it does not need")
+			if _level_of(tile) != 0:
+				_fail("a ring-%d tile built collision it does not need" % _level_of(tile))
 		else:
 			without += 1
 	if with_collision == 0:
 		_fail("nothing has collision — the player would fall through the world")
-	print("collision: %d near tiles have it, %d distant tiles skip it" % [
+	print("collision: %d innermost tiles have it, %d distant tiles skip it" % [
 		with_collision, without])
 
 
@@ -268,15 +315,16 @@ func _check_collision_only_near() -> void:
 func _check_streaming_stays_flat() -> void:
 	# Walk far enough to reach the moving steady state before measuring.
 	for step in 6:
-		_player.global_position += Vector3(64.0, 0.0, 0.0)
+		_player.global_position += Vector3(200.0, 0.0, 0.0)
 		await _settle()
 
 	var before := _manager.debug_stats()
 	var before_cells := _cell_set()
 
-	# Far enough again that not one tile from the first measurement can remain.
-	for step in 12:
-		_player.global_position += Vector3(64.0, 0.0, 0.0)
+	# Far enough again that not one tile from the first measurement can remain
+	# — the world is HORIZON across, so this must clear its full diameter.
+	for step in 14:
+		_player.global_position += Vector3(200.0, 0.0, 0.0)
 		await _settle()
 
 	var after := _manager.debug_stats()
@@ -287,67 +335,96 @@ func _check_streaming_stays_flat() -> void:
 		if before_cells.has(cell):
 			overlap += 1
 	if overlap != 0:
-		_fail("%d tiles survived a 768-unit walk — the player did not really leave" % overlap)
+		_fail("%d tiles survived a 2800-unit walk — the player did not really leave" % overlap)
 
-	var tile_drift: int = absi(after["tiles"] - before["tiles"])
+	# A relative tolerance, not the near-exact one a single-tile-size grid could
+	# hold to. Ring regions snap to whole cells of the ring OUTSIDE them, so the
+	# outermost boundary moves in 2-tile steps hundreds of units wide; crossing
+	# one legitimately adds or drops a whole row of coarse tiles. The claim being
+	# tested is that cost plateaus, not that it is frame-identical.
+	var tile_drift: float = absf(float(after["tiles"] - before["tiles"])) / float(before["tiles"])
 	var vertex_drift: float = absf(float(after["vertices"] - before["vertices"])) / float(before["vertices"])
-	if tile_drift > 2:
-		_fail("tile count drifted from %d to %d over the walk" % [before["tiles"], after["tiles"]])
-	if vertex_drift > 0.05:
+	if tile_drift > 0.25:
+		_fail("tile count drifted %.0f%% (from %d to %d) over the walk" % [
+			tile_drift * 100.0, before["tiles"], after["tiles"]])
+	if vertex_drift > 0.25:
 		_fail("vertex count drifted %.0f%% over the walk" % (vertex_drift * 100.0))
-	print("steady state, then 768 units further: tiles %d -> %d, vertices %d -> %d, %d in common" % [
+	print("steady state, then 2800 units further: tiles %d -> %d, vertices %d -> %d, %d in common" % [
 		before["tiles"], after["tiles"], before["vertices"], after["vertices"], overlap])
 
 
 func _cell_set() -> Dictionary:
 	var out := {}
 	for tile: TerrainChunk in _tiles():
-		out[Vector2i(int(tile.position.x), int(tile.position.z))] = true
+		out[Vector3(tile.position.x, tile.size, tile.position.z)] = true
 	return out
 
 
-## A tile the player walks toward must gain detail, and gain collision, without
-## ever ceasing to exist along the way.
-func _check_retiling_on_approach() -> void:
-	# Pick a tile currently in the coarsest band, well ahead of the player.
-	var target: TerrainChunk = null
-	for tile: TerrainChunk in _tiles():
-		if tile.resolution == _coarsest:
-			if target == null or tile.position.x > target.position.x:
-				target = tile
-	if target == null:
-		_fail("no coarse tile to walk toward")
+## THE RISK THE RING LAYOUT INTRODUCES, and the reason _free_unwanted() waits.
+##
+## Under the old single-tile-size grid, walking toward a coarse tile rebuilt it
+## finer IN PLACE, which could not gap: TerrainChunk swaps its mesh only at the
+## very end of a build, so the old one stayed up throughout. Rings do not work
+## that way. A tile never changes size, so approaching one means freeing a big
+## tile and building four smaller ones that do not exist yet — and freeing first
+## leaves a visible hole in the ground for as long as those four take.
+##
+## So: pick a point far ahead, walk onto it WITHOUT ever letting the queue
+## settle, and assert that once the ground there exists it never once stops
+## existing. Checked every frame, because a hole lasting a single frame is still
+## a hole the player can see (and fall through).
+func _check_ground_never_gaps_on_approach() -> void:
+	var start := _player.global_position
+	var target := start + Vector3(OUTER_RING_START * 2.0, 0.0, 0.0)
+	if not _covered(target.x, target.z):
+		_fail("nothing covers the approach target to begin with")
 		return
-	var target_pos := target.position
-	var coarse_res: int = target.resolution
-	print("approaching a tile at %.0f, %.0f (currently res %d)" % [
-		target_pos.x, target_pos.z, coarse_res])
+	var start_level := _level_at(target.x, target.z)
 
-	_player.global_position = Vector3(target_pos.x, 0.0, target_pos.z)
-	await _settle()
+	var gaps := 0
+	var steps := 120
+	for i in steps:
+		# Continuous movement, never settling — the realistic case, and the one
+		# where a free can outrun the builds meant to replace it.
+		_player.global_position = start.lerp(target, float(i + 1) / float(steps))
+		await get_tree().process_frame
+		if not _covered(target.x, target.z):
+			gaps += 1
 
-	var arrived: TerrainChunk = null
+	var end_level := _level_at(target.x, target.z)
+	if gaps > 0:
+		_fail("ground under the approach target vanished on %d of %d frames — a hole in the world" % [
+			gaps, steps])
+	elif end_level >= start_level:
+		_fail("walking onto the target did not move it to a finer ring (%d -> %d)" % [
+			start_level, end_level])
+	else:
+		print("approach: ring %d -> %d underfoot, ground never gapped across %d frames" % [
+			start_level, end_level, steps])
+
+
+## The ring of the smallest tile covering a point, or -1 if nothing does.
+func _level_at(x: float, z: float) -> int:
+	var best := -1
 	for tile: TerrainChunk in _tiles():
-		if tile.position.is_equal_approx(target_pos):
-			arrived = tile
-	if arrived == null:
-		_fail("the tile vanished instead of gaining detail")
-		return
-	if arrived.resolution != _finest:
-		_fail("tile stayed at res %d after the player stood on it" % arrived.resolution)
-	if arrived.get_node_or_null("Collider") == null:
-		_fail("tile gained detail but no collision")
-	if arrived != target:
-		_fail("tile was replaced rather than rebuilt in place — that would flicker")
-	print("on arrival: same tile object, rebuilt res %d -> %d, collision added" % [
-		coarse_res, arrived.resolution])
+		var half: float = tile.size * 0.5
+		if absf(x - tile.position.x) <= half and absf(z - tile.position.z) <= half:
+			var level := _level_of(tile)
+			if best < 0 or level < best:
+				best = level
+	return best
 
 
 ## The bug this was written to catch: an NPC standing still while the player
 ## wanders far away must keep its collision, because it is a physics body that
 ## falls through the world the instant its tile loses one. Without registering
-## as an anchor, the NPC's tile would retile down to a collisionless resolution
-## once it falls outside every band measured from the camera alone.
+## as an anchor, the ground under the NPC would end up on a ring that carries no
+## collision once it falls outside the innermost band measured from the camera.
+##
+## Note what is NOT asserted any more: that the anchor's ground is at full
+## detail. An anchor buys collision, not detail — see terrain_manager.gd's note
+## on _anchors. has_ground_at() is exactly the question an NPC asks before
+## trusting the floor, so it is exactly what this checks.
 func _check_collision_anchor_survives_player_leaving() -> void:
 	var npc_spot := _player.global_position + Vector3(300.0, 0.0, 0.0)
 	var npc := Node3D.new()
@@ -359,26 +436,24 @@ func _check_collision_anchor_survives_player_leaving() -> void:
 	_manager.register_collision_anchor(npc, 8.0)
 	await _settle()
 
-	var cell := _manager._cell_at(Vector2(npc_spot.x, npc_spot.z))
-	if not _manager._active.has(cell) or _manager._active[cell]["resolution"] != _finest:
-		_fail("registering an anchor did not bring its ground to full detail")
+	if not _manager.has_ground_at(npc_spot.x, npc_spot.z):
+		_fail("registering an anchor did not give its ground collision")
 	else:
-		print("anchor: registered far from the player, got full-detail ground immediately")
+		print("anchor: registered far from the player, got collidable ground immediately")
 
-	# Walk the player far away in the OPPOSITE direction — the anchor's tile is
-	# now outside every screen-space band. It must survive anyway.
-	_player.global_position += Vector3(-500.0, 0.0, 0.0)
+	# Walk the player far away in the OPPOSITE direction — the anchor's ground is
+	# now well outside the innermost ring. It must stay collidable anyway.
+	_player.global_position += Vector3(-900.0, 0.0, 0.0)
 	await _settle()
-	if not _manager._active.has(cell) or _manager._active[cell]["resolution"] != _finest:
-		_fail("anchor's ground was freed or downgraded once the player left — an NPC here would fall through the world")
+	if not _manager.has_ground_at(npc_spot.x, npc_spot.z):
+		_fail("anchor's ground lost collision once the player left — an NPC here would fall through the world")
 	else:
-		print("anchor: ground survived the player walking 500 units away")
+		print("anchor: ground stayed collidable with the player 900 units away")
 
 	_manager.unregister_collision_anchor(npc)
 	await _settle()
-	var still_active := _manager._active.has(cell)
-	print("anchor: after unregistering, tile %s (expected to eventually free or retile like any other distant tile)" % (
-		"still present" if still_active else "freed"))
+	print("anchor: after unregistering, ground %s (expected to eventually lose collision like any distant tile)" % (
+		"still collidable" if _manager.has_ground_at(npc_spot.x, npc_spot.z) else "released"))
 	npc.queue_free()
 
 
@@ -391,7 +466,9 @@ func _check_collision_anchor_survives_player_leaving() -> void:
 ## the way an NPC and a player wandering nearby actually behave, and never
 ## lets the queue settle before checking.
 func _check_anchor_survives_continuous_movement() -> void:
-	var anchor_pos := _player.global_position + Vector3(96.0, 0.0, 0.0)
+	_player.global_position = Vector3.ZERO
+	await _settle()
+	var anchor_pos := Vector3(96.0, 0.0, 0.0)
 	var npc := Node3D.new()
 	npc.name = "ContinuousAnchor"
 	get_tree().root.add_child(npc)
@@ -408,31 +485,24 @@ func _check_anchor_survives_continuous_movement() -> void:
 	# near-player tasks ahead of the anchor — if anything a harder case, not
 	# an easier one.
 	_manager.max_concurrent_builds = 1
-	_manager.vertices_per_batch = 250
+	_manager.vertices_per_batch = 40
 	_manager.register_collision_anchor(npc, 8.0)
 
-	var cell := _manager._cell_at(Vector2(anchor_pos.x, anchor_pos.z))
 	var settled_by_frame := -1
 	for i in 600:
 		# A tight, continuous circle around a point close to the anchor — near
-		# enough that the player's own tiles keep demanding (re)builds every
-		# scan, so there is always something competing for the single build
-		# slot and the queue never gets the chance to empty.
+		# enough that the player's own tiles keep demanding builds every scan,
+		# so there is always something competing for the single build slot and
+		# the queue never gets the chance to empty.
 		var angle := float(i) * 0.15
 		_player.global_position = Vector3(cos(angle) * 15.0, 0.0, sin(angle) * 15.0)
 		await get_tree().process_frame
-
-		# NOT _active[cell]["resolution"] == finest: that flag is set the
-		# instant a build is QUEUED, not when it finishes — with a batched,
-		# multi-frame build there is a real window where the manager already
-		# claims full detail but the TerrainChunk has no Collider yet. What
-		# actually stops an NPC falling through is the collider existing, so
-		# that is what this checks.
-		var has_collision := false
-		if _manager._active.has(cell):
-			var chunk: Node = _manager._active[cell]["chunk"]
-			has_collision = chunk.get_node_or_null("Collider") != null
-		if has_collision and settled_by_frame < 0:
+		# has_ground_at() rather than the manager's own bookkeeping: that flag is
+		# set the instant a build is QUEUED, not when it finishes, and with a
+		# batched multi-frame build there is a real window where the manager
+		# already claims collision but the TerrainChunk has no Collider yet. What
+		# actually stops an NPC falling through is the collider existing.
+		if _manager.has_ground_at(anchor_pos.x, anchor_pos.z) and settled_by_frame < 0:
 			settled_by_frame = i
 
 	# A generous but real ceiling: a couple of dozen frames covers the anchor's
@@ -442,23 +512,62 @@ func _check_anchor_survives_continuous_movement() -> void:
 	# turn — a slow eventual fix is still an NPC visibly sunk into the ground
 	# for a second or more.
 	if settled_by_frame < 0:
-		_fail("anchor tile never gained collision across 600 frames of continuous player movement")
+		_fail("anchor ground never gained collision across 600 frames of continuous player movement")
 	elif settled_by_frame > 30:
-		_fail("anchor tile took %d frames to gain collision under continuous movement — too slow, an NPC would visibly sink" % settled_by_frame)
+		_fail("anchor ground took %d frames to gain collision under continuous movement — too slow, an NPC would visibly sink" % settled_by_frame)
 	else:
 		print("anchor under continuous movement (batched, 1 build slot): collidable by frame %d" % settled_by_frame)
 	npc.queue_free()
 	_manager.unregister_collision_anchor(npc)
 	_manager.vertices_per_batch = 0
+	_manager.max_concurrent_builds = 4
+
+
+## WHAT TASK #16 ACTUALLY EXISTS FOR, as a pass/fail rather than a claim.
+##
+## Under the old fixed-tile-size grid, tile count was quadratic in the horizon:
+## doubling the view distance meant FOUR TIMES the tiles, which is why the
+## horizon could not extend. Rings make it roughly logarithmic — double the
+## horizon, add one ring, and the tile count barely moves, because the extra
+## ground is covered by tiles twice as wide.
+##
+## Both halves matter. Doubling the horizon WITHOUT adding a ring leaves the
+## outermost ring to absorb all the new area at its existing tile size, which is
+## quadratic again — the ring count is what buys the scaling, and this asserts
+## the pair together.
+func _check_horizon_extends_cheaply() -> void:
+	_player.global_position = Vector3.ZERO
+	await _settle()
+	var before: int = _manager.debug_stats()["tiles"]
+
+	_manager.horizon_distance = HORIZON * 2.0
+	_manager.ring_count = RING_COUNT + 1
+	await _settle()
+	var after: int = _manager.debug_stats()["tiles"]
+
+	var ratio := float(after) / float(before)
+	# Quadratic growth would be ~4x. Anything under 1.6x is unambiguously the
+	# ring behaviour rather than the old one.
+	if ratio > 1.6:
+		_fail("doubling the horizon multiplied tiles by %.2fx — not ring scaling" % ratio)
+	else:
+		print("horizon %.0f -> %.0f with one more ring: tiles %d -> %d (%.2fx, quadratic would be 4x)" % [
+			HORIZON, HORIZON * 2.0, before, after, ratio])
+
+	_manager.horizon_distance = HORIZON
+	_manager.ring_count = RING_COUNT
+	await _settle()
 
 
 ## What all of this actually bought, as one number.
 func _report_payoff() -> void:
 	var stats := _manager.debug_stats()
-	var resident: int = stats["vertices"]
-	# What the same ground would have cost built uniformly at full detail.
-	var uniform: int = stats["tiles"] * (_finest + 1) * (_finest + 1)
+	# What the same square of ground would have cost at one fixed tile size.
+	var uniform := int(pow(2.0 * HORIZON / CHUNK_SIZE, 2.0))
 	print("")
-	print("payoff: %d tiles resident, %d vertices" % [stats["tiles"], resident])
-	print("        uniform full detail would be %d vertices" % uniform)
-	print("        detail falloff saves %.0f%%" % ((1.0 - float(resident) / float(uniform)) * 100.0))
+	print("payoff: %d tiles resident, %d vertices" % [stats["tiles"], stats["vertices"]])
+	print("        per ring (innermost first): %s" % str(stats["per_level"]))
+	print("        a uniform %.0f-unit grid to the same horizon would be %d tiles" % [
+		CHUNK_SIZE, uniform])
+	print("        growing tiles with distance saves %.0f%% of them" % (
+		(1.0 - float(stats["tiles"]) / float(uniform)) * 100.0))

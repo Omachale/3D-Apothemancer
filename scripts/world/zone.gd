@@ -116,23 +116,33 @@ func get_mounds() -> Array:
 ## How the ground is streamed and how its detail falls away with distance — see
 ## terrain_manager.gd.
 ##
-## Detail is chosen from projected screen size now, not a fixed-distance
-## ladder — `resolutions` is just the set of levels available; where each one
-## actually gets used falls out of `max_screen_error_px` and wherever the
-## camera happens to be, including its altitude once flying exists. Only the
-## finest resolution gets collision, because it is the only one the player can
-## reach. Measured cost per 32-unit tile is about 16 ms at resolution 32 and
-## 0.4 ms at resolution 4, so the horizon is nearly free.
+## Tiles GROW with distance rather than getting coarser at a fixed size:
+## `chunk_size` is the innermost tile size and each of the `ring_count` rings
+## outward doubles it, so tiles here are 32, 64, 128, 256 and 512 units across.
+## Every tile builds at `tile_resolution`, which makes the vertex spacing 1, 2,
+## 4, 8 and 16 units — the same range of detail as before, but reached with a
+## few hundred tiles instead of nine hundred, and extendable.
+##
+## Which ring a tile lands in is chosen from projected screen size, not a
+## fixed-distance ladder: it falls out of `max_screen_error_px` and wherever the
+## camera happens to be, including its altitude once flying exists. THAT is the
+## detail dial — `tile_resolution` is a ratio, not a quality setting. Only ring
+## 0 gets collision (`collision_level_maximum`), because it is the only one the
+## player can reach; anchored NPCs are the exception, handled by
+## terrain_manager.gd itself.
 ##
 ## `horizon_distance` is the hard edge past which nothing is built at all —
 ## the screen-space test alone never reaches exactly zero, so this is what
 ## keeps the world finite. There is no MAP edge short of it, only unbuilt
-## ground — walking, or flying, toward it simply builds more.
+## ground — walking, or flying, toward it simply builds more. Pushing it out is
+## now roughly one extra ring rather than quadratically more tiles, but wants
+## distance fog first or the edge is plainly visible.
 func get_terrain_manager() -> Dictionary:
 	return {"chunk_size": 32.0, "unload_margin": 48.0, "skirt_depth": 2.0,
-		"resolutions": [2, 4, 8, 16, 32],
+		"tile_resolution": 32,
+		"ring_count": 5,
 		"max_screen_error_px": 24.0,
-		"collision_resolution_minimum": 32,
+		"collision_level_maximum": 0,
 		"horizon_distance": 480.0}
 
 
@@ -341,19 +351,11 @@ func _make_terrain_manager(data: Dictionary, field: Heightfield) -> TerrainManag
 	manager.unload_margin = data.get("unload_margin", 48.0)
 	manager.skirt_depth = data.get("skirt_depth", 2.0)
 	manager.material = data.get("material", MAT_GRASS)
-	if data.has("resolutions"):
-		# TerrainManager.resolutions is a typed Array[int]; the Dictionary
-		# literal in get_terrain_manager() below produces a plain untyped
-		# Array, and GDScript does not implicitly convert one into the other
-		# on assignment — hence the explicit rebuild here rather than a direct
-		# assign.
-		var typed: Array[int] = []
-		for value in data["resolutions"]:
-			typed.append(int(value))
-		manager.resolutions = typed
+	manager.tile_resolution = data.get("tile_resolution", manager.tile_resolution)
+	manager.ring_count = data.get("ring_count", manager.ring_count)
 	manager.max_screen_error_px = data.get("max_screen_error_px", manager.max_screen_error_px)
-	manager.collision_resolution_minimum = data.get(
-		"collision_resolution_minimum", manager.collision_resolution_minimum)
+	manager.collision_level_maximum = data.get(
+		"collision_level_maximum", manager.collision_level_maximum)
 	manager.horizon_distance = data.get("horizon_distance", manager.horizon_distance)
 	return manager
 

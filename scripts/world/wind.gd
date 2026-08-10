@@ -77,6 +77,13 @@ var gust_width := 7.0: set = set_gust_width
 ## Average seconds between spawns on each lane (actual spacing is randomised
 ## around this, so lanes don't fall into a visible metronome).
 var gust_period := 10.0: set = set_gust_period
+## Maximum angle, in degrees, a single gust's own drift direction is allowed
+## to wander from [member direction_degrees]. Global rather than per-material
+## because it describes how gusty the wind itself is, not how any one plant
+## responds to it — the same reasoning as every other var here. Trees will
+## read this exact value once they exist, instead of carrying their own copy
+## for it to drift out of sync with grass's.
+var gust_direction_variance := 18.0: set = set_gust_direction_variance
 ## Amount of the small, constant, always-present flutter — the "alive even
 ## when calm" layer, distinct from a gust passing through.
 var turbulence := 1.0: set = set_turbulence
@@ -90,6 +97,7 @@ func _ready() -> void:
 	set_speed(speed)
 	set_gust_width(gust_width)
 	set_gust_period(gust_period)
+	set_gust_direction_variance(gust_direction_variance)
 	set_turbulence(turbulence)
 
 
@@ -119,6 +127,12 @@ func set_gust_width(value: float) -> void:
 func set_gust_period(value: float) -> void:
 	gust_period = maxf(value, 0.5)
 	RenderingServer.global_shader_parameter_set("wind_gust_period", gust_period)
+
+
+func set_gust_direction_variance(value: float) -> void:
+	gust_direction_variance = clampf(value, 0.0, 45.0)
+	RenderingServer.global_shader_parameter_set(
+		"wind_gust_direction_variance", gust_direction_variance)
 
 
 func set_turbulence(value: float) -> void:

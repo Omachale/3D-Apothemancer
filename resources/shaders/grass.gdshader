@@ -17,14 +17,21 @@ render_mode cull_disabled, diffuse_burley, specular_schlick_ggx, depth_draw_opaq
 //
 // GUSTS ARE LOCAL PATCHES, not a band spanning the whole world. Each gust is a
 // small 2D Gaussian — soft-edged, no hard boundary to pop at — whose centre
-// spawns at a random point and drifts across at a constant world-space speed
-// for a limited lifetime, then fades and disappears. A patch of grass visibly
-// leans as the centre approaches, straightens as it leaves, and the effect
-// never touches ground outside its own radius. Several lanes run with
-// independent random spawn points and timings, so different parts of a field
-// gust at different times instead of the whole screen moving together. This
-// also eases in/out over time (not just space), so a gust spawning already
-// close to a blade doesn't pop into existence at full strength.
+// spawns at a random point and drifts across for a limited lifetime, then
+// fades and disappears. A patch of grass visibly leans as the centre
+// approaches, straightens as it leaves, and the effect never touches ground
+// outside its own radius. Several lanes run with independent random spawn
+// points and timings, so different parts of a field gust at different times
+// instead of the whole screen moving together. This also eases in/out over
+// time (not just space), so a gust spawning already close to a blade doesn't
+// pop into existence at full strength.
+//
+// EACH GUST ALSO DRIFTS AT ITS OWN SLIGHT ANGLE off wind_direction — up to
+// wind_gust_direction_variance degrees either way, drawn once at spawn — so lanes
+// visibly diverge instead of all tracking dead parallel. BLADE LEAN NEVER
+// USES THIS: a blade always leans along wind_direction itself, however far
+// off-axis the gust bending it happens to be travelling. Only where a patch's
+// centre goes varies; how the grass responds to being inside one does not.
 //
 // The blade mesh carries its own normalised height in UV.y: 0 at the root,
 // 1 at the tip. Reading that instead of dividing VERTEX.y by a "blade height"
@@ -52,6 +59,19 @@ global uniform float wind_gust_width;
 /// around this per spawn, so lanes do not fall into a visible metronome.
 global uniform float wind_gust_period;
 global uniform float wind_turbulence;
+/// Maximum angle, in degrees, a single gust's own drift direction is allowed
+/// to wander from wind_direction. Owned by wind.gd exactly like the globals
+/// above — it describes the wind itself, not this material, so trees read
+/// the same value later instead of carrying their own copy to drift from.
+global uniform float wind_gust_direction_variance;
+/// Multiplies gust-driven LEAN only (sway_distance below) — not the idle
+/// flutter, which stays a "grass is alive" cue independent of weather. Grass
+/// visibly bends further under a heavier downpour than raw wind_strength
+/// alone would give it. Owned by rain.gd exactly the way the wind globals
+/// above are owned by wind.gd: one broadcaster, so every material that reads
+/// this name — grass today, trees later — rises and falls with the same
+/// storm rather than each keeping its own rain coupling to drift out of sync.
+global uniform float rain_sway_boost;
 
 group_uniforms colour;
 uniform vec4 root_color : source_color = vec4(0.13, 0.22, 0.09, 1.0);
@@ -64,7 +84,7 @@ uniform float root_occlusion : hint_range(0.0, 1.0) = 0.75;
 
 group_uniforms motion;
 /// How far the tip travels at the peak of a gust, in metres.
-uniform float sway_distance : hint_range(0.0, 2.0) = 0.30;
+uniform float sway_distance : hint_range(0.0, 2.0) = 0.252;
 /// Above 1 the bend concentrates toward the tip, which reads as a stiff stalk
 /// hinging near the top; below 1 it bends low down like a soft leaf. Around
 /// 1.6 gives the arc real grass has.
@@ -77,6 +97,12 @@ uniform float wind_travel_range = 140.0;
 /// with wind_speed this sets how far a patch travels before it disappears
 /// (distance = wind_speed * this).
 uniform float gust_lifetime : hint_range(1.0, 60.0) = 18.0;
+/// Fraction of gust_lifetime spent easing in and out, each side, rather than
+/// sitting at full strength. 0.2 was a short ramp with most of the gust flat
+/// out; stretching this shrinks that plateau and lengthens the ramp, which
+/// together with the smoothstep curve in gust_lane is what makes a gust's
+/// arrival and departure read as gradual rather than merely quick.
+uniform float gust_ease_fraction : hint_range(0.05, 0.5) = 0.35;
 /// Fast, small, ALWAYS-PRESENT flutter — the idle layer, distinct from a gust
 /// passing through. This is the "slight random sway" that should read as
 /// grass being alive, not as weather.
@@ -137,42 +163,63 @@ float gust_lane(vec2 xz, vec2 dir, vec2 perp, float lane_seed) {
 	}
 	float t = cycle_time - wait; // Seconds since this gust spawned.
 
+	// This gust's own drift direction — wind_direction rotated by a small
+	// random angle, drawn once from (cycle_index, lane_seed) so it is fixed
+	// for the gust's whole life rather than re-rolled every frame. Without
+	// this every lane drifts dead parallel and the field reads as one uniform
+	// band regardless of how many independent lanes are running.
+	float drift_angle = mix(-wind_gust_direction_variance, wind_gust_direction_variance,
+			hash(cycle_index + 1.53, lane_seed)) * (PI / 180.0);
+	float ca = cos(drift_angle);
+	float sa = sin(drift_angle);
+	vec2 gust_dir = vec2(dir.x * ca - dir.y * sa, dir.x * sa + dir.y * ca);
+	vec2 gust_perp = vec2(-gust_dir.y, gust_dir.x);
+
 	float travel_dist = wind_speed * lifetime;
 	float spawn_along = mix(-wind_travel_range, wind_travel_range,
 			hash(cycle_index + 0.37, lane_seed)) - travel_dist * 0.5;
 	float spawn_lateral = mix(-wind_travel_range, wind_travel_range,
 			hash(cycle_index + 0.71, lane_seed));
 
-	vec2 center = dir * (spawn_along + wind_speed * t) + perp * spawn_lateral;
+	vec2 center = gust_dir * (spawn_along + wind_speed * t) + gust_perp * spawn_lateral;
 	float radius = max(wind_gust_width, 0.5);
 	float dist = length(xz - center);
 	float spatial = exp(-(dist * dist) / (radius * radius));
 
-	// Temporal ease over the first/last 20% of the lifetime, so a gust that
-	// happens to spawn or despawn close to a blade fades rather than pops.
-	float fade_time = lifetime * 0.2;
-	float temporal = clamp(min(t, lifetime - t) / max(fade_time, 0.01), 0.0, 1.0);
+	// Temporal ease over the first/last gust_ease_fraction of the lifetime, so
+	// a gust that happens to spawn or despawn close to a blade fades rather
+	// than pops. smoothstep rather than the raw linear ramp: linear still has
+	// a visible kink at zero — nothing, then an immediate constant-slope
+	// climb — while smoothstep has zero slope at both ends, which is what
+	// actually reads as gradual rather than merely slow.
+	float fade_time = lifetime * gust_ease_fraction;
+	float ramp = clamp(min(t, lifetime - t) / max(fade_time, 0.01), 0.0, 1.0);
+	float temporal = smoothstep(0.0, 1.0, ramp);
 
 	return spatial * temporal;
 }
 
 /// TEMPORARY PROOF-OF-CONCEPT GUST. No randomness, loops continuously: a
-/// patch drifts through the player's spawn point along [param dir] — the SAME
-/// vector the blade-bend code uses, passed in rather than recomputed, so the
-/// patch's travel direction and the direction blades lean can never diverge.
-/// (An earlier version defined its own "screen right" copy of this vector and
-/// moved against it instead of with it — patch and lean pointed opposite
-/// ways. One source of truth for the wind axis fixes that structurally.)
+/// patch drifts through [param start_pos], along [param dir] rotated by
+/// [param angle_degrees] — the SAME vector the blade-bend code uses as its
+/// base, passed in rather than recomputed, so a proof gust's travel direction
+/// and the direction blades lean can never diverge independently of the
+/// deliberate offset below. (An earlier version defined its own "screen
+/// right" copy of this vector and moved against it instead of with it —
+/// patch and lean pointed opposite ways. One source of truth for the wind
+/// axis fixes that structurally.)
 /// Remove once the real gust system is confirmed and being tuned instead.
-float proof_gust(vec2 xz, vec2 dir) {
-	vec2 target = vec2(10.0, 22.0); // Player's spawn point, zone.gd.
+float proof_gust(vec2 xz, vec2 dir, vec2 start_pos, float angle_degrees) {
+	float angle = angle_degrees * (PI / 180.0);
+	vec2 pdir = vec2(dir.x * cos(angle) - dir.y * sin(angle),
+			dir.x * sin(angle) + dir.y * cos(angle));
 	float screen_width = 40.0; // See README: "camera sees ~40 units of ground".
-	vec2 start_pos = target - dir * screen_width; // Upwind of the target.
+	vec2 origin = start_pos - pdir * screen_width; // Upwind of the target.
 	float proof_speed = 10.5;
 	float radius = 5.0;
 	float lifetime = (screen_width * 2.0) / proof_speed;
 	float t = mod(TIME, lifetime);
-	vec2 center = start_pos + dir * proof_speed * t; // Drifts downwind, same as the bend.
+	vec2 center = origin + pdir * proof_speed * t; // Drifts downwind along pdir.
 	float dist = length(xz - center);
 	return exp(-(dist * dist) / (radius * radius));
 }
@@ -201,8 +248,19 @@ void vertex() {
 		float gust = gust_lane(origin.xz, dir, perp, 0.11)
 				+ gust_lane(origin.xz, dir, perp, 0.53)
 				+ gust_lane(origin.xz, dir, perp, 0.79)
-				+ gust_lane(origin.xz, dir, perp, 0.97)
-				+ proof_gust(origin.xz, dir);
+				+ gust_lane(origin.xz, dir, perp, 0.97);
+
+		// Two deterministic proof patches, standing in for gust_lane's random
+		// per-gust direction offset above with a fixed, repeatable pair you
+		// can actually watch diverge: one rotated +wind_gust_direction_variance,
+		// one -wind_gust_direction_variance, spawned 10 world units apart along
+		// (-1,-1) normalised — "north", roughly away from/behind the
+		// character as seen from the camera at the default 45-degree yaw (see
+		// camera_rig.gd; camera forward at that yaw is this same diagonal).
+		vec2 proof_target_a = vec2(10.0, 22.0); // Player's spawn point, zone.gd.
+		vec2 proof_target_b = proof_target_a + vec2(-0.70710678, -0.70710678) * 10.0;
+		gust += proof_gust(origin.xz, dir, proof_target_a, wind_gust_direction_variance)
+				+ proof_gust(origin.xz, dir, proof_target_b, -wind_gust_direction_variance);
 		gust = min(gust, 1.4);
 		v_gust = clamp(gust, 0.0, 1.0);
 
@@ -213,7 +271,7 @@ void vertex() {
 		float idle = sin(TIME * idle_speed + phase * 2.7) * idle_distance * give;
 
 		float force = wind_strength * gust * give;
-		float bend_amount = force * sway_distance + idle * wind_turbulence;
+		float bend_amount = force * sway_distance * rain_sway_boost + idle * wind_turbulence;
 
 		// Root fixed, tip free. Everything about the bend lives in this curve.
 		float lean = pow(v_height, bend_curve);
@@ -243,7 +301,7 @@ void fragment() {
 	// Grass darkens slightly as a gust bends it, the way real grass turns to
 	// show more shaded blade and less sunlit face when wind flattens it.
 	// Doubles as a readable "wind is here" cue without being a debug colour.
-	colour *= mix(1.0, 0.6, v_gust);
+	colour *= mix(1.0, 0.48, v_gust);
 
 	ALBEDO = colour;
 	ROUGHNESS = surface_roughness;

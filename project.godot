@@ -150,3 +150,11 @@ wind_turbulence={
 "type": "float",
 "value": 1.0
 }
+wind_gust_direction_variance={
+"type": "float",
+"value": 18.0
+}
+rain_sway_boost={
+"type": "float",
+"value": 1.1
+}

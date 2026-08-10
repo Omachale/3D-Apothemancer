@@ -43,6 +43,22 @@ const LEVELS := {
 	Intensity.HEAVY: {"amount_ratio": 1.0, "speed": 16.0, "alpha": 0.65,
 		"light_factor": 0.4, "lightning_period": 5.0},
 }
+## Multiplier on grass's gust-driven lean (rain_sway_boost, a global shader
+## uniform — see grass.gdshader) at each level, including OFF. Grass already
+## leans 10% further than its old baseline even with no rain at all; each
+## level of rain stacks another 10% on top of THAT baseline rather than
+## compounding level over level, so the numbers here are the flat totals
+## (1.1/1.2/1.3/1.4), not per-step multipliers. Rain physically flattens
+## grass more than raw wind_strength alone would, independent of how hard the
+## wind happens to be blowing that moment. Both the base and the per-level
+## step used to be 20%; halved across the board because the overall bend read
+## as too strong.
+const SWAY_BOOST := {
+	Intensity.OFF: 1.1,
+	Intensity.LIGHT: 1.2,
+	Intensity.MODERATE: 1.3,
+	Intensity.HEAVY: 1.4,
+}
 ## Actual wait between flashes is randomised around lightning_period within
 ## this fraction, so strikes don't fall into a visible metronome — same trick
 ## grass.gdshader uses for gust spawn timing.
@@ -140,6 +156,11 @@ func _advance_intensity() -> void:
 
 func set_intensity(value: Intensity) -> void:
 	intensity = value
+	# Pushed unconditionally, ahead of the particle-system early-out below —
+	# grass sways by rain level regardless of whether the rain emitter itself
+	# has been built yet, the same way the OFF branch still needs its own
+	# value pushed rather than being skipped entirely.
+	RenderingServer.global_shader_parameter_set("rain_sway_boost", SWAY_BOOST[value])
 	if _particles == null:
 		return
 	if value == Intensity.OFF:

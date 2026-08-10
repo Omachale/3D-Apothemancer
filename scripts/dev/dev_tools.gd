@@ -273,6 +273,8 @@ func _tick_wind_log(delta: float) -> void:
 	var mat: ShaderMaterial = load("res://resources/materials/grass_blades.tres")
 	var travel_range: float = mat.get_shader_parameter("wind_travel_range")
 	var lifetime: float = mat.get_shader_parameter("gust_lifetime")
+	var direction_variance: float = Wind.gust_direction_variance
+	var ease_fraction: float = mat.get_shader_parameter("gust_ease_fraction")
 
 	var dir := direction.normalized()
 	var perp := Vector2(-dir.y, dir.x)
@@ -281,7 +283,8 @@ func _tick_wind_log(delta: float) -> void:
 	var active: Array = []
 	for seed in seeds:
 		var v := _gust_lane_value(_wind_log_at, dir, perp, seed, t,
-			speed, gust_width, gust_period, travel_range, lifetime)
+			speed, gust_width, gust_period, travel_range, lifetime,
+			direction_variance, ease_fraction)
 		total += v
 		if v > 0.001:
 			active.append("%.2f" % v)
@@ -298,7 +301,8 @@ func _hash2(a: float, b: float) -> float:
 
 func _gust_lane_value(xz: Vector2, dir: Vector2, perp: Vector2, lane_seed: float,
 		t: float, speed: float, gust_width: float, gust_period: float,
-		travel_range: float, lifetime: float) -> float:
+		travel_range: float, lifetime: float, direction_variance: float,
+		ease_fraction: float) -> float:
 	lifetime = maxf(lifetime, 0.5)
 	var wait_min: float = maxf(gust_period * 0.6, 0.1)
 	var wait_max: float = maxf(gust_period * 1.4, wait_min + 0.1)
@@ -312,19 +316,31 @@ func _gust_lane_value(xz: Vector2, dir: Vector2, perp: Vector2, lane_seed: float
 		return 0.0
 	var since_spawn: float = cycle_time - wait
 
+	# This gust's own drift direction — mirrors gust_lane()'s drift_angle in
+	# grass.gdshader exactly, including the +1.53 hash offset, so the two
+	# cannot silently disagree about which gust a given (cycle_index,
+	# lane_seed) actually is.
+	var drift_angle := deg_to_rad(lerp(-direction_variance, direction_variance,
+		absf(_hash2(cycle_index + 1.53, lane_seed))))
+	var ca := cos(drift_angle)
+	var sa := sin(drift_angle)
+	var gust_dir := Vector2(dir.x * ca - dir.y * sa, dir.x * sa + dir.y * ca)
+	var gust_perp := Vector2(-gust_dir.y, gust_dir.x)
+
 	var travel_dist: float = speed * lifetime
 	var spawn_along: float = lerp(-travel_range, travel_range,
 		absf(_hash2(cycle_index + 0.37, lane_seed))) - travel_dist * 0.5
 	var spawn_lateral: float = lerp(-travel_range, travel_range,
 		absf(_hash2(cycle_index + 0.71, lane_seed)))
 
-	var center: Vector2 = dir * (spawn_along + speed * since_spawn) + perp * spawn_lateral
+	var center: Vector2 = gust_dir * (spawn_along + speed * since_spawn) + gust_perp * spawn_lateral
 	var radius: float = maxf(gust_width, 0.5)
 	var dist: float = xz.distance_to(center)
 	var spatial: float = exp(-(dist * dist) / (radius * radius))
 
-	var fade_time: float = lifetime * 0.2
-	var temporal: float = clampf(minf(since_spawn, lifetime - since_spawn) / maxf(fade_time, 0.01), 0.0, 1.0)
+	var fade_time: float = lifetime * ease_fraction
+	var ramp: float = clampf(minf(since_spawn, lifetime - since_spawn) / maxf(fade_time, 0.01), 0.0, 1.0)
+	var temporal: float = smoothstep(0.0, 1.0, ramp)
 	return spatial * temporal
 
 
