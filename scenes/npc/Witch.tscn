@@ -1,8 +1,9 @@
-[gd_scene load_steps=4 format=3]
+[gd_scene load_steps=5 format=3]
 
 [ext_resource type="Script" path="res://scripts/npc/npc_controller.gd" id="1"]
 [ext_resource type="PackedScene" path="res://assets/models/Witch.gltf" id="2"]
 [ext_resource type="PackedScene" path="res://scenes/npc/DarkBolt.tscn" id="3"]
+[ext_resource type="Script" path="res://scripts/combat/health.gd" id="4"]
 
 [sub_resource type="CapsuleShape3D" id="NpcShape"]
 radius = 0.35
@@ -12,6 +13,7 @@ height = 2.0
 collision_layer = 8
 collision_mask = 3
 script = ExtResource("1")
+display_name = "Witch"
 attack_enabled = true
 projectile_scene = ExtResource("3")
 
@@ -20,3 +22,7 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
 shape = SubResource("NpcShape")
 
 [node name="CharacterArmature" parent="." instance=ExtResource("2")]
+
+[node name="Health" type="Node" parent="."]
+script = ExtResource("4")
+maximum = 20.0

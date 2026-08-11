@@ -3,10 +3,10 @@ extends CharacterBody3D
 ## NPC behaviour: wander aimlessly, and — if [member attack_enabled] — stop and
 ## throw a bolt at the player when one comes within range.
 ##
-## There is still no health and no damage anywhere in this. The attack shoves
-## the player and nothing else, which is a real, readable interaction that
-## commits to none of the undecided magic rules. Damage hangs off
-## `projectile.gd` when those rules exist.
+## Damage runs ONE WAY for now: the player's bolts hurt these, and their bolts
+## still only shove the player, because the player has no [Health] component
+## yet. That asymmetry is deliberate rather than overlooked — see
+## `projectile.gd`'s note on why damage defaults to zero per bolt.
 ##
 ## One script drives every character. Built against Quaternius-style exports
 ## specifically: a root node containing a Skeleton3D and a sibling
@@ -15,6 +15,16 @@ extends CharacterBody3D
 ## export shape needs no code change.
 
 enum State { IDLE, WALK, ATTACK }
+
+@export_group("Identity")
+## Shown on the target panel when this NPC is selected. Falls back to the node
+## name, so an unnamed NPC reads as "Witch" rather than as blank.
+@export var display_name := ""
+## Whether the player can target and attack this. Separate from
+## [member attack_enabled] on purpose: that is "does this shoot at me", this is
+## "can I shoot at it", and a harmless NPC still wants to be targetable so the
+## player can inspect it.
+@export var targetable := true
 
 @export_group("Wander")
 @export_range(1.0, 20.0, 0.5) var wander_radius := 6.0
@@ -79,6 +89,10 @@ var _bolt_fired := false
 ## player_controller.gd's identical split for why this stays separate rather
 ## than being folded into the state logic itself.
 var _knockback := Vector3.ZERO
+## Optional: an NPC with no Health child simply cannot be hurt, rather than
+## erroring. Kept as a plain reference so consumers (the target panel) can read
+## the live numbers and connect to its signals directly.
+var _health: Health = null
 
 
 func _ready() -> void:
@@ -87,6 +101,9 @@ func _ready() -> void:
 	floor_max_angle = deg_to_rad(50.0)
 	floor_snap_length = 0.6
 	_origin = global_position
+	_health = get_node_or_null("Health") as Health
+	if _health:
+		_health.died.connect(_on_died)
 	_anim = _find_animation_player(self)
 	if _anim == null:
 		push_warning("NpcWander: no AnimationPlayer found under %s." % name)
@@ -171,6 +188,32 @@ func apply_knockback(direction: Vector3, force: float, _lift := 0.0) -> void:
 	var flat := Vector3(direction.x, 0.0, direction.z)
 	if flat.length_squared() > 0.001:
 		_knockback += flat.normalized() * force
+
+
+## Hurt this NPC. Duck-typed the same way [method apply_knockback] is, so
+## projectile.gd can call it without knowing what it hit — see the note there.
+func take_damage(amount: float) -> void:
+	if _health:
+		_health.take_damage(amount)
+
+
+## The live [Health], or null. For the target panel, which wants both the
+## current numbers and the `changed` signal.
+func get_health() -> Health:
+	return _health
+
+
+## What to call this on screen — [member display_name] if set, node name if not.
+func get_display_name() -> String:
+	return display_name if not display_name.is_empty() else name
+
+
+## Removed outright on death. There is no death animation on these rigs (only
+## Idle/Walk/Gun_Shoot ship with the Quaternius characters, same limitation
+## that made a hit a pure shove), so anything more than vanishing would be a
+## stand-in needing its own art. Flagged as placeholder rather than dressed up.
+func _on_died() -> void:
+	queue_free()
 
 
 func _process_idle(delta: float) -> void:

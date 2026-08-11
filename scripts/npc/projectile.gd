@@ -1,12 +1,13 @@
 extends Area3D
 
-## A bolt of dark energy: travels in a straight line, shoves whatever it hits,
-## and removes itself.
+## A bolt of dark energy: travels in a straight line, shoves and damages
+## whatever it hits, and removes itself.
 ##
-## Knockback only — no damage, no health. That is deliberate: there is no
-## health system yet and the magic rules are undecided, so this delivers a
-## purely physical effect that is fun to feel and commits to nothing. When
-## damage does arrive, it goes in [method _on_body_entered] beside the shove.
+## Damage is per-scene and defaults to ZERO, so a bolt only hurts if its scene
+## says how much. That keeps the previous "knockback is the whole interaction"
+## behaviour as the default rather than silently arming every existing bolt the
+## moment health existed — notably the NPC's DarkBolt, which is aimed at a
+## player who has no [Health] component yet.
 ##
 ## Moved by hand in [method _physics_process] rather than being a RigidBody3D:
 ## a bolt wants a dead-straight path at a constant speed, which is simpler to
@@ -30,6 +31,10 @@ signal struck(at: Vector3)
 @export_range(1.0, 4.0, 0.1) var elongation := 1.0
 
 @export_group("Impact")
+## Hit points removed from whatever this strikes, if it has a [Health]. Zero
+## means this bolt is a pure shove — see the class note above for why that is
+## the default rather than a damaging one.
+@export_range(0.0, 100.0, 0.5) var damage := 0.0
 ## Whether a hit shoves the thing it struck. Off for a bolt whose impact is
 ## meant to be purely visual (see [member explosion_scene]) rather than
 ## physical.
@@ -95,6 +100,10 @@ func launch(from: Vector3, aim: Vector3) -> void:
 
 
 func _on_body_entered(body: Node3D) -> void:
+	# Duck-typed exactly like apply_knockback below: anything that can be hurt
+	# implements take_damage, and this stays ignorant of what it hit.
+	if damage > 0.0 and body.has_method("take_damage"):
+		body.take_damage(damage)
 	if apply_knockback_on_hit and body.has_method("apply_knockback"):
 		# Shove along the bolt's own path rather than from its centre outward,
 		# so a glancing hit still pushes the way the bolt was going instead of

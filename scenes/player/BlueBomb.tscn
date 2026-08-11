@@ -17,6 +17,7 @@ rings = 6
 collision_layer = 32
 collision_mask = 11
 script = ExtResource("1")
+damage = 5.0
 speed = 15.4
 hit_mask = 11
 apply_knockback_on_hit = false

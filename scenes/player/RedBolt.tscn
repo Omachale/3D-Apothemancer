@@ -19,6 +19,7 @@ script = ExtResource("1")
 speed = 35.2
 hit_mask = 11
 elongation = 2.4
+damage = 5.0
 knockback_force = 16.0
 knockback_lift = 4.0
 

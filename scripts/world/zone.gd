@@ -261,12 +261,20 @@ func _generate_forest() -> Array:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 20240 + 700
 
-	# Wind blows toward roughly (X-, Z+) at the default -45 degree direction;
-	# this reads that live from Wind rather than hardcoding the angle a
-	# second time, so the forest can't quietly drift out of alignment with
-	# it the way the old proof-gust comment warned about.
-	var along_wind := Vector2(sin(deg_to_rad(Wind.direction_degrees)),
-			cos(deg_to_rad(Wind.direction_degrees)))
+	# Read live from Wind rather than hardcoding the angle a second time, so the
+	# forest can't quietly drift out of alignment with it the way the five
+	# hand-placed pines in get_props() did.
+	#
+	# ...except in the EDITOR, where build() also runs and non-@tool autoloads
+	# like Wind exist as bare Nodes carrying none of their script's properties —
+	# reading direction_degrees there fails exactly the way Game access does,
+	# which is why every Game access in this file is already guarded the same
+	# way. The fallback duplicates wind.gd's own declared default, so the editor
+	# preview matches the running game; if that default changes, change this too.
+	var wind_degrees := 90.0
+	if not Engine.is_editor_hint():
+		wind_degrees = Wind.direction_degrees
+	var along_wind := Vector2(sin(deg_to_rad(wind_degrees)), cos(deg_to_rad(wind_degrees)))
 	var across_wind := Vector2(-along_wind.y, along_wind.x)
 
 	# Anchored well past the small pine cluster and the SouthHill feature
