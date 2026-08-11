@@ -77,6 +77,9 @@ var _move_velocity := Vector3.ZERO
 var _knockback := Vector3.ZERO
 var _run_toggled := false
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 9.8)
+## Optional, exactly as on npc_controller.gd: no Health child means the player
+## simply cannot be hurt, rather than erroring.
+var _health: Health = null
 
 @onready var model: Node3D = $Model
 @onready var caster: Node = get_node_or_null("SpellCaster")
@@ -90,6 +93,9 @@ func _ready() -> void:
 	floor_stop_on_slope = false
 	collision_layer = Layers.PLAYER
 	collision_mask = Layers.SOLID
+	_health = get_node_or_null("Health") as Health
+	if _health:
+		_health.died.connect(_on_died)
 	Game.register_player(self)
 	# Terrain now streams around the CAMERA, not the player (see
 	# terrain_manager.gd's _rescan) — the two used to be the same point for
@@ -186,14 +192,45 @@ func _ground_ready() -> bool:
 ## slide — it is applied straight to the vertical velocity and then left to
 ## gravity, not decayed like the horizontal part.
 ##
-## This is the seam an attack calls; it deliberately says nothing about damage,
-## since there is no health system yet.
+## This is the seam an attack calls, and it stays purely physical — damage is
+## the separate [method take_damage] below, so a shove that should not hurt
+## (and a hit that should not shove) each stay expressible.
 func apply_knockback(direction: Vector3, force: float, lift := 0.0) -> void:
 	var flat := Vector3(direction.x, 0.0, direction.z)
 	if flat.length_squared() > 0.001:
 		_knockback += flat.normalized() * force
 	if lift > 0.0:
 		velocity.y = maxf(velocity.y, lift)
+
+
+## Hurt the player. Duck-typed identically to npc_controller.gd's, so
+## projectile.gd hits both through the same call and knows about neither.
+func take_damage(amount: float) -> void:
+	if _health:
+		_health.take_damage(amount)
+
+
+## The live [Health], or null. For a player health bar when one exists.
+func get_health() -> Health:
+	return _health
+
+
+## PLACEHOLDER DEATH: respawn at the zone's spawn point with health restored.
+##
+## There is no death sequence, no penalty and no game-over — those are game
+## rules and none are decided (see [[DESIGN_GOALS.md]]). Respawning is the
+## least presumptuous thing that keeps a session going: it commits to nothing
+## while making "the player can die" real enough to feel while testing.
+func _on_died() -> void:
+	global_transform = Game.spawn_transform
+	velocity = Vector3.ZERO
+	_knockback = Vector3.ZERO
+	if _health:
+		_health.revive()
+	# Without this the camera sweeps across the whole map to catch up, which
+	# reads as a bug rather than as a respawn.
+	if Game.camera_rig and Game.camera_rig.has_method("snap_to_target"):
+		Game.camera_rig.snap_to_target()
 
 
 func _get_move_direction() -> Vector3:

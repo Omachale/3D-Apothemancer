@@ -16,6 +16,7 @@ rings = 6
 collision_layer = 32
 collision_mask = 7
 script = ExtResource("1")
+damage = 5.0
 
 [node name="Collider" type="CollisionShape3D" parent="."]
 shape = SubResource("BoltShape")

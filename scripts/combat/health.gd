@@ -55,6 +55,15 @@ func heal(amount: float) -> void:
 	changed.emit(current, maximum)
 
 
+## Back to full, and alive again. The ONLY way out of the dead state — [member
+## _dead] is otherwise one-way, which is exactly what makes [signal died] fire
+## once rather than once per killing blow.
+func revive() -> void:
+	_dead = false
+	current = maximum
+	changed.emit(current, maximum)
+
+
 func is_alive() -> bool:
 	return not _dead
 

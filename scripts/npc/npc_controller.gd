@@ -93,6 +93,10 @@ var _knockback := Vector3.ZERO
 ## erroring. Kept as a plain reference so consumers (the target panel) can read
 ## the live numbers and connect to its signals directly.
 var _health: Health = null
+## True from the killing blow until this node is actually freed. The death
+## tween runs over ~1.5 seconds, during which this still exists and must not
+## take another hit, be targeted, or start a second collapse.
+var _dying := false
 
 
 func _ready() -> void:
@@ -208,12 +212,82 @@ func get_display_name() -> String:
 	return display_name if not display_name.is_empty() else name
 
 
-## Removed outright on death. There is no death animation on these rigs (only
-## Idle/Walk/Gun_Shoot ship with the Quaternius characters, same limitation
-## that made a hit a pure shove), so anything more than vanishing would be a
-## stand-in needing its own art. Flagged as placeholder rather than dressed up.
+## PLACEHOLDER DEATH SEQUENCE: topple over while blackening, then sink into the
+## ground and shrink away. Roughly 1.5 seconds, then freed.
+##
+## There is no death ANIMATION on these rigs — only Idle/Walk/Gun_Shoot ship
+## with the Quaternius characters, the same limitation that made a hit a pure
+## shove — so this is done with a tween on the model's transform instead of a
+## clip. Deliberately crude and cheap to delete.
+##
+## Blackening is a `material_overlay`, not a change to the character's own
+## materials: an overlay draws on top and is one property on one node, so
+## nothing has to find, duplicate and restore however many surfaces the imported
+## GLTF happens to have. Sinking-and-shrinking rather than fading out for the
+## same reason — `GeometryInstance3D.transparency` only does anything if the
+## underlying material already renders as transparent, which these do not, so a
+## fade would silently do nothing.
 func _on_died() -> void:
-	queue_free()
+	if _dying:
+		return
+	_dying = true
+	# Stop being a physical or logical participant immediately: no more AI, no
+	# more collision, and nothing can target or shoot a corpse mid-collapse.
+	set_physics_process(false)
+	velocity = Vector3.ZERO
+	targetable = false
+	collision_layer = 0
+	collision_mask = 0
+	if _anim:
+		_anim.stop()
+
+	var model := _visual_root()
+	if model == null:
+		queue_free()
+		return
+
+	var shroud := StandardMaterial3D.new()
+	shroud.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	shroud.albedo_color = Color(0.0, 0.0, 0.0, 0.0)
+	shroud.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	for mesh in _find_mesh_instances(model):
+		mesh.material_overlay = shroud
+
+	var tween := create_tween()
+	tween.set_parallel(true)
+	# Topple: face-down about the model's own X, plus a slight drop so the
+	# body meets the ground rather than pivoting in the air at hip height.
+	tween.tween_property(model, "rotation:x", -PI * 0.5, 0.45) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tween.tween_property(shroud, "albedo_color:a", 1.0, 0.45)
+
+	tween.chain().set_parallel(true)
+	tween.tween_property(model, "position:y", model.position.y - 1.6, 0.9) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	tween.tween_property(model, "scale", model.scale * 0.55, 0.9)
+	tween.chain().tween_callback(queue_free)
+
+
+## The node the character's meshes hang off — the imported GLTF instance, not
+## this body, so toppling it does not drag the collider or this script's own
+## transform round with it. Found by search rather than by a fixed name, the
+## same way [method _find_animation_player] is, so a differently-named export
+## still works.
+func _visual_root() -> Node3D:
+	for child in get_children():
+		if child is Node3D and not (child is CollisionShape3D):
+			if not _find_mesh_instances(child).is_empty():
+				return child
+	return null
+
+
+func _find_mesh_instances(node: Node) -> Array[MeshInstance3D]:
+	var found: Array[MeshInstance3D] = []
+	if node is MeshInstance3D:
+		found.append(node)
+	for child in node.get_children():
+		found.append_array(_find_mesh_instances(child))
+	return found
 
 
 func _process_idle(delta: float) -> void:

@@ -23,6 +23,9 @@ func _ready() -> void:
 	for path in NPC_SCENES:
 		_check_npc(path)
 	_check_bolt_damage()
+	_check_player()
+	_check_revive()
+	await _check_death_sequence()
 	if _failures == 0:
 		print("VERIFY HEALTH: PASS")
 	else:
@@ -102,9 +105,94 @@ func _check_bolt_damage() -> void:
 			print("  %s: %.1f damage" % [path.get_file(), bolt.damage])
 		bolt.queue_free()
 
-	# The NPC's own bolt must stay harmless: the player has no Health yet, so
-	# arming it would be damage into a void that looks like it works.
+	# The NPC's bolt was deliberately left harmless while the player had no
+	# Health — damage into a void that looks like it works. Now the player has
+	# one, so it must be armed, and this asserts the opposite of what it used to.
 	var dark: Node = load("res://scenes/npc/DarkBolt.tscn").instantiate()
-	if dark.damage > 0.0:
-		_fail("DarkBolt does %.1f damage but the player has no Health" % dark.damage)
+	if dark.damage <= 0.0:
+		_fail("DarkBolt does no damage, but the player is damageable now")
+	else:
+		print("  DarkBolt.tscn: %.1f damage" % dark.damage)
 	dark.queue_free()
+
+
+## The player must be damageable too, or the NPC bolts that now carry damage
+## are firing into a void.
+func _check_player() -> void:
+	var player: Node = load("res://scenes/player/Player.tscn").instantiate()
+	add_child(player)
+	var health := player.get_node_or_null("Health") as Health
+	if health == null:
+		_fail("Player has no Health child")
+		player.queue_free()
+		return
+	if not is_equal_approx(health.maximum, 20.0):
+		_fail("Player max health is %.1f, expected 20" % health.maximum)
+	if not player.has_method("take_damage"):
+		_fail("Player has no take_damage() for projectile.gd to call")
+	else:
+		player.take_damage(5.0)
+		if not is_equal_approx(health.current, 15.0):
+			_fail("Player at %.1f HP after one 5-damage hit, expected 15" % health.current)
+	print("  Player.tscn: %.0f HP, damageable" % health.maximum)
+	player.queue_free()
+
+
+## Death is one-way per life, but respawn has to be able to undo it — otherwise
+## the player dies once and is permanently dead-but-walking.
+func _check_revive() -> void:
+	var health := Health.new()
+	health.maximum = 20.0
+	add_child(health)
+	var deaths := [0]
+	health.died.connect(func() -> void: deaths[0] += 1)
+	health.take_damage(20.0)
+	health.revive()
+	if not health.is_alive():
+		_fail("revive() left health dead")
+	if not is_equal_approx(health.current, 20.0):
+		_fail("revive() restored %.1f HP, expected full 20" % health.current)
+	# A second life must be able to end the same way the first did.
+	health.take_damage(20.0)
+	if deaths[0] != 2:
+		_fail("died fired %d times across two lives, expected 2" % deaths[0])
+	print("  revive(): restores full health, death re-arms")
+	health.queue_free()
+
+
+## The death sequence must actually finish and free the node. A tween that
+## never completes would leave corpses accumulating invisibly.
+func _check_death_sequence() -> void:
+	var npc: Node = load("res://scenes/npc/Witch.tscn").instantiate()
+	add_child(npc)
+	npc.take_damage(999.0)
+	if npc.collision_layer != 0:
+		_fail("dying NPC still has a collision layer, so it can still be hit")
+	if npc.targetable:
+		_fail("dying NPC is still targetable")
+	# Part-way through the topple the NPC must still EXIST and be visibly
+	# rotating. Without this the test cannot tell a proper collapse from
+	# _visual_root() returning null and the node vanishing on the spot — both
+	# end with a freed node, which is all the check below can see.
+	var model: Node3D = npc.call("_visual_root")
+	if model == null:
+		_fail("dying NPC has no visual root, so it will vanish instead of collapsing")
+	else:
+		var rotation_before := model.rotation.x
+		var meshes: Array = npc.call("_find_mesh_instances", model)
+		var overlaid: bool = meshes.any(
+			func(m: MeshInstance3D) -> bool: return m.material_overlay != null)
+		if not overlaid:
+			_fail("dying NPC got no blackening overlay on any mesh")
+		await get_tree().create_timer(0.3).timeout
+		if not is_instance_valid(npc):
+			_fail("NPC vanished 0.3s in instead of collapsing over ~1.5s")
+		elif is_equal_approx(model.rotation.x, rotation_before):
+			_fail("dying NPC never toppled (rotation.x still %.2f)" % model.rotation.x)
+
+	# Then it must actually finish and free itself, or corpses accumulate.
+	await get_tree().create_timer(2.5).timeout
+	if is_instance_valid(npc):
+		_fail("NPC still alive after the death sequence should have freed it")
+	else:
+		print("  death sequence: blackens, topples, completes, frees node")
