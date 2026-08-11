@@ -229,16 +229,17 @@ func get_props() -> Array:
 		# Pines (see PineTreeProp.tscn) — the first real tree-model asset, and
 		# the proving ground for wind response on something other than grass.
 		#
-		# Deliberately strung out ALONG THE WIND rather than scattered. Gusts
-		# spawn upwind of the player and travel down [member Wind.direction_degrees]
-		# (-45, so heading roughly -X/+Z), give or take
-		# Wind.gust_direction_variance, so stepping trees along that axis makes
-		# a gust visibly arrive at one, then the next, instead of moving
-		# everything at once. Sideways spread is kept within a gust's
-		# Wind.gust_width radius so each tree is actually struck rather than
-		# clipped by the patch's soft edge, and all sit clear of the spawn
-		# point rather than on top of the player. If direction_degrees changes,
-		# this line stops aligning with the wind and wants re-laying.
+		# STALE, AS WARNED: originally strung out along Wind.direction_degrees
+		# (-45) so a gust would visibly reach one tree after the next.
+		# direction_degrees is now 90 (see wind.gd — the camera default yaw
+		# changing from 45 to 0 broke the old perpendicularity, so the wind
+		# axis moved to restore it), and these five hand-placed positions were
+		# never re-laid to match. They still catch gusts and sway correctly —
+		# gust_total() samples wherever a tree actually stands — they just no
+		# longer form a deliberate line along the wind. The 160-tree forest
+		# below (_generate_forest) reads Wind.direction_degrees live and has
+		# no such staleness risk; prefer that pattern over hardcoded positions
+		# for anything meant to stay aligned with the wind axis.
 		{"scene": PINE_TREE_SCENE, "pos": Vector3(21, 0, 13), "yaw": 200.0, "scale": 0.9},
 		{"scene": PINE_TREE_SCENE, "pos": Vector3(17, 0, 21), "yaw": 65.0, "scale": 1.15},
 		{"scene": PINE_TREE_SCENE, "pos": Vector3(15, 0, 18), "yaw": 0.0, "scale": 1.0},

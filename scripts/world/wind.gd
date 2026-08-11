@@ -55,18 +55,24 @@ extends Node
 ## ground in a screen-sized view, which is the point of the two-layer model.
 const MAX_GUSTS := 6
 
-## Compass direction the wind blows toward, in degrees. 0 is +Z.
+## Compass direction the wind blows toward, in degrees. 0 is +Z (this is a
+## wind-local reference frame, NOT the North/East/South/West naming in
+## DESIGN_GOALS.md — see that file's compass section for why the two don't
+## line up; converting between them means going through raw XZ vectors).
 ##
-## KEEP THIS ROUGHLY PERPENDICULAR TO THE DEFAULT CAMERA YAW (45). Grass bends
-## along this direction, so when it points near the camera's own view axis the
-## blades lean almost directly away from the viewer and the on-screen movement
-## collapses to a few pixels — the sway is still happening, it is just being
-## viewed end-on. This was 32 degrees for a long time, 13 degrees off the
-## camera axis, and made the wind look completely broken while every value was
-## in fact correct. Don't reach for screen-relative "left/right" language when
-## tuning this: it only means one thing at the default camera yaw. Compass
-## degrees are the one shared vocabulary; use those.
-var direction_degrees := -45.0: set = set_direction_degrees
+## KEEP THIS ROUGHLY PERPENDICULAR TO THE DEFAULT CAMERA YAW (0, facing North
+## / -Z, i.e. wind-compass 180). Grass bends along this direction, so when it
+## points near the camera's own view axis the blades lean almost directly
+## toward/away from the viewer and the on-screen movement collapses to a few
+## pixels — the sway is still happening, it is just being viewed end-on. This
+## was 32 degrees for a long time (13 degrees off a then-45-degree camera
+## yaw) and made the wind look completely broken while every value was in
+## fact correct; changing the camera's default yaw to 0 broke the
+## perpendicularity again the same way, which is why this is now 90 rather
+## than the old -45. Don't reach for screen-relative "left/right" language
+## when tuning this: it only means one thing at the default camera yaw.
+## Compass degrees are the one shared vocabulary; use those.
+var direction_degrees := 90.0: set = set_direction_degrees
 ## Overall force. 0 is dead calm, 1 a decent breeze, 2+ a gale.
 var strength := 1.0: set = set_strength
 ## World units per second a gust patch's centre drifts. CPU-side only now —

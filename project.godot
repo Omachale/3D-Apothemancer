@@ -128,7 +128,7 @@ anti_aliasing/quality/msaa_3d=2
 
 wind_direction={
 "type": "vec2",
-"value": Vector2(-0.7071, 0.7071)
+"value": Vector2(1, 0)
 }
 wind_strength={
 "type": "float",
