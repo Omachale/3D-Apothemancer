@@ -1,39 +1,61 @@
 extends Node
 
-## Washes the selected target in colour so it is obvious which one is picked.
+## Outlines the selected target in a glowing rim so it is obvious which one is
+## picked, without repainting the character.
 ##
-## A `material_overlay` rather than a true outline. An inverted-hull outline —
-## duplicate mesh, scaled up, front faces culled — is the usual technique and
-## gives a crisper edge, but on a SKINNED character the hull has to follow the
-## skeleton, which means duplicating each MeshInstance3D and sharing its
-## Skeleton3D, on GLTF rigs whose node layout this project does not control. The
-## overlay is five lines, works on any mesh regardless of rig, and is already
-## proven on these exact characters because the death blackening in
-## npc_controller.gd uses the same mechanism. If a wash turns out not to read
-## clearly enough at the gameplay camera distance, THEN it is worth the hull.
+## A fresnel rim in a `material_overlay` — see target_rim.gdshader. Two other
+## approaches were tried or considered and both are worse here:
+##
+## An INVERTED-HULL outline (duplicate mesh, scaled up, front faces culled)
+## gives the crispest edge, but on a skinned character the hull must follow the
+## skeleton, so every character needs its MeshInstance3D duplicated and its
+## Skeleton3D shared — per-rig setup work, repeated for every model ever added,
+## on GLTF layouts this project does not control.
+##
+## A FLAT ALPHA WASH came first and shipped briefly. It is one material and no
+## setup, but alpha blending covers the texture underneath in proportion to its
+## alpha, so a selected character became a solid orange silhouette: easy to see,
+## and unrecognisable.
+##
+## The rim has neither problem. It is per-pixel geometry — the angle between the
+## surface normal and the view — so it needs no mesh duplication and knows
+## nothing about any rig, which means it keeps working on characters added
+## later with no per-model work. And it is ADDITIVE, so it brightens the edge
+## rather than replacing colour: the character stays fully readable underneath.
 ##
 ## Kept separate from targeting.gd deliberately: that owns which thing is
 ## selected, this owns what that looks like, and neither needs to know how the
 ## other works.
 
-## Colour laid over the target. Alpha is the strength of the wash — high enough
-## to be unmistakable at the gameplay camera distance, low enough that the
-## character underneath is still readable rather than a flat silhouette.
-@export var tint := Color(1.0, 0.62, 0.1, 0.42)
+const RIM_SHADER := preload("res://resources/shaders/target_rim.gdshader")
 
-## The meshes this has tinted, so they can be put back exactly as they were.
+## Colour of the glow. Alpha is unused — the rim is additive, so its visible
+## strength is [member rim_strength], not opacity.
+@export var rim_color := Color(1.0, 0.62, 0.1)
+## How tightly the glow hugs the silhouette. Raise to thin the band, lower to
+## spread it across the surface.
+@export_range(0.5, 8.0, 0.1) var rim_power := 3.4
+@export_range(0.0, 4.0, 0.05) var rim_strength := 1.25
+## Faint even glow beneath the rim, so a surface turned flat to the camera does
+## not read as unselected. See the shader for why this is not zero.
+@export_range(0.0, 0.5, 0.01) var fill := 0.03
+
+## The meshes this has applied the rim to, so they can be put back exactly as
+## they were.
 var _tinted: Array[MeshInstance3D] = []
-var _overlay: StandardMaterial3D = null
+var _overlay: ShaderMaterial = null
 
 
 func _ready() -> void:
-	_overlay = StandardMaterial3D.new()
-	# Unshaded so the wash reads as the same colour wherever the target is
-	# standing — a lit overlay would go dark in shadow, which is exactly where
-	# the player most needs to see which thing is selected.
-	_overlay.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_overlay.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_overlay.albedo_color = tint
+	# One material shared by every mesh of every target. It carries no
+	# per-target state — the rim is computed per pixel from the geometry — so
+	# there is nothing to duplicate per character.
+	_overlay = ShaderMaterial.new()
+	_overlay.shader = RIM_SHADER
+	_overlay.set_shader_parameter("rim_color", rim_color)
+	_overlay.set_shader_parameter("rim_power", rim_power)
+	_overlay.set_shader_parameter("rim_strength", rim_strength)
+	_overlay.set_shader_parameter("fill", fill)
 	Targeting.target_changed.connect(_on_target_changed)
 	_on_target_changed(Targeting.current)
 
@@ -46,8 +68,8 @@ func _on_target_changed(target: Node3D) -> void:
 		# Never stomp an overlay something else owns — chiefly the death
 		# blackening, which is applied on the killing blow, one frame before
 		# targeting notices the target is dead and clears it. Without this the
-		# tint would overwrite the shroud and the corpse would collapse in
-		# amber instead of black.
+		# rim would overwrite the shroud and the corpse would collapse glowing
+		# instead of blackened.
 		if mesh.material_overlay != null:
 			continue
 		mesh.material_overlay = _overlay
