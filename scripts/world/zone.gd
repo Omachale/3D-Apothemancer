@@ -244,7 +244,55 @@ func get_props() -> Array:
 		{"scene": PINE_TREE_SCENE, "pos": Vector3(15, 0, 18), "yaw": 0.0, "scale": 1.0},
 		{"scene": PINE_TREE_SCENE, "pos": Vector3(2, 0, 22), "yaw": 130.0, "scale": 1.05},
 		{"scene": PINE_TREE_SCENE, "pos": Vector3(-1, 0, 31), "yaw": 290.0, "scale": 0.95},
-	]
+	] + _generate_forest()
+
+
+## A dense pine forest, well clear of spawn — see [method get_props] for the
+## header comment on the cluster this extends. Laid out as a band ROTATED 90
+## DEGREES FROM the small cluster above: rows run along [member Wind]'s
+## direction axis (so a gust sweeps down a row, tree after tree) and the band
+## itself is long in the perpendicular axis, so the forest reads as a mass
+## from any angle rather than a single-file line.
+##
+## Deterministic: seeded RNG only, per [[DESIGN_GOALS.md]]'s "keep generated
+## content seeded" rule — rerunning build() must place the same trees.
+func _generate_forest() -> Array:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20240 + 700
+
+	# Wind blows toward roughly (X-, Z+) at the default -45 degree direction;
+	# this reads that live from Wind rather than hardcoding the angle a
+	# second time, so the forest can't quietly drift out of alignment with
+	# it the way the old proof-gust comment warned about.
+	var along_wind := Vector2(sin(deg_to_rad(Wind.direction_degrees)),
+			cos(deg_to_rad(Wind.direction_degrees)))
+	var across_wind := Vector2(-along_wind.y, along_wind.x)
+
+	# Anchored well past the small pine cluster and the SouthHill feature
+	# (centred (-46,-46), radius ~24) so the two stands don't overlap and
+	# neither clips the hill's steeper ground.
+	var anchor := Vector2(-40.0, 90.0)
+
+	var row_count := 4 # "several trees in width"
+	var row_spacing := 4.0
+	var trees_per_row := 40
+	var tree_spacing := 4.0 # Close enough for a dense stand, clear of collisions.
+
+	var trees: Array = []
+	for row in row_count:
+		var row_offset := (row - (row_count - 1) / 2.0) * row_spacing
+		for i in trees_per_row:
+			var along_offset := (i - (trees_per_row - 1) / 2.0) * tree_spacing
+			# Small jitter so the stand doesn't read as a rank-and-file grid.
+			var jitter := Vector2(rng.randf_range(-1.2, 1.2), rng.randf_range(-1.2, 1.2))
+			var xz := anchor + across_wind * along_offset + along_wind * row_offset + jitter
+			trees.append({
+				"scene": PINE_TREE_SCENE,
+				"pos": Vector3(xz.x, 0, xz.y),
+				"yaw": rng.randf_range(0.0, 360.0),
+				"scale": rng.randf_range(0.85, 1.2),
+			})
+	return trees
 
 
 # ---------------------------------------------------------------------------
