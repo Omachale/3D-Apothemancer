@@ -2,7 +2,8 @@ extends Node
 
 ## Autoload. Inert unless asked for.
 ##
-## F12 saves a screenshot to user://screenshots.
+## F12 in-game toggles free camera pitch — see camera_rig.gd; this autoload
+## no longer binds it.
 ##
 ## It also supports driving the game from the command line, so a change can be
 ## verified without sitting at the keyboard:
@@ -50,8 +51,6 @@ extends Node
 ##
 ## Combined, those are enough to assert things like "walking north-west for
 ## four seconds ends up on top of the hill" from a single command.
-
-const SCREENSHOT_DIR := "user://screenshots"
 
 var _shot_path := ""
 var _shot_frames := 90
@@ -374,15 +373,3 @@ func _tick_wind_log(delta: float) -> void:
 		print("        gust %d  at=(%7.1f,%7.1f)  r=%.1f  strength=%.3f  age=%5.1f/%5.1f" % [
 			i, pos.x, pos.y, g["radius"], g["strength"], g["age"], g["lifetime"],
 		])
-
-
-func _unhandled_input(event: InputEvent) -> void:
-	if not event.is_action_pressed("debug_screenshot"):
-		return
-	DirAccess.make_dir_recursive_absolute(SCREENSHOT_DIR)
-	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
-	var path := "%s/shot_%s.png" % [SCREENSHOT_DIR, stamp]
-	await RenderingServer.frame_post_draw
-	var image := get_viewport().get_texture().get_image()
-	if image.save_png(path) == OK:
-		print("Screenshot saved: ", ProjectSettings.globalize_path(path))

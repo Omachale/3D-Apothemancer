@@ -18,13 +18,13 @@ uniform vec4 rim_color : source_color = vec4(1.0, 0.62, 0.1, 1.0);
 // How tightly the glow hugs the silhouette. Higher confines it to a thinner
 // band right at the edge; lower spreads it across the whole surface and starts
 // to look like the flat wash this replaced.
-uniform float rim_power : hint_range(0.5, 8.0) = 3.4;
-uniform float rim_strength : hint_range(0.0, 4.0) = 1.25;
+uniform float rim_power : hint_range(0.5, 8.0) = 2.8;
+uniform float rim_strength : hint_range(0.0, 4.0) = 1.7;
 // A faint even glow underneath the rim. Without it a broad surface turned flat
 // to the camera — a shoulder, the top of a head from this game's high angle —
 // has almost no rim anywhere and the target can look unselected from certain
 // angles. Deliberately small: enough to say "this one", not enough to tint.
-uniform float fill : hint_range(0.0, 0.5) = 0.03;
+uniform float fill : hint_range(0.0, 0.5) = 0.05;
 
 void fragment() {
 	// NORMAL and VIEW are both view-space here, so their dot product is the

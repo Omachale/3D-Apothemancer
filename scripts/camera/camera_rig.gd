@@ -6,6 +6,11 @@
 ## straight back along the rig's local +Z, so the whole framing is controlled by
 ## three numbers: [member yaw], [member pitch] and [member distance].
 ##
+## Pitch is fixed at the game's framing by default. F12 unlocks it for
+## middle-mouse dragging and F12 again re-locks it, snapping back to the
+## startup value — so experimenting with the angle can always be undone with
+## one key rather than by nudging it back by eye.
+##
 ## Framing note: a narrow FOV pushed further back reads as "isometric" while
 ## keeping a little perspective depth. At the defaults below the mage (~2.6
 ## units tall including the hat) fills roughly 18% of the viewport height,
@@ -42,6 +47,15 @@
 @export var allow_rotation := true
 @export_range(0.0, 360.0, 5.0) var rotation_speed := 90.0
 
+@export_group("Pitch control")
+## Degrees of tilt per pixel of middle-mouse drag, once F12 has unlocked pitch.
+@export_range(0.02, 1.0, 0.01) var pitch_drag_speed := 0.25
+## Which way a drag tilts. The default is the orbit convention: drag UP and the
+## camera rises, giving a more top-down view. Exported because this is pure
+## preference and the opposite convention is just as common — one checkbox
+## beats asking anyone to edit code over it.
+@export var invert_pitch_drag := false
+
 @export_group("Inspect mode")
 ## F1 swings the camera in close at near eye level. The gameplay framing is
 ## deliberately far enough out that the character is only ~100px tall, which is
@@ -54,16 +68,33 @@
 ## Seconds to swing between the two framings.
 @export_range(0.0, 2.0, 0.05) var inspect_blend_time := 0.35
 
+## Ends of the pitch range, matching [member pitch]'s @export_range. Held as
+## constants because that annotation only constrains the INSPECTOR — nothing
+## stopped code from setting a pitch the editor would refuse, and dragging is
+## code. Clamping in [method set_pitch] makes the two agree.
+const MIN_PITCH := -89.0
+const MAX_PITCH := -5.0
+
 var target: Node3D = null
 
 ## 0 = gameplay framing, 1 = inspect framing.
 var _inspect := 0.0
 var _inspect_on := false
+## Whether middle-drag may tilt the camera. Off by default: the fixed pitch is
+## the game's look, and a camera that drifts off it by accident is worse than
+## one that cannot move at all.
+var _pitch_unlocked := false
+## The framing to restore when pitch is locked again. Captured once at startup
+## rather than read from the export at restore time, because dragging writes
+## straight to `pitch` — by the time the player toggles off, the export no
+## longer remembers what it started as.
+var _default_pitch := -45.0
 
 @onready var _camera: Camera3D = $Camera3D
 
 
 func _ready() -> void:
+	_default_pitch = pitch
 	_apply_rig_rotation()
 	_apply_camera_transform()
 	Game.register_camera(self)
@@ -83,6 +114,15 @@ func _process(delta: float) -> void:
 
 	if Input.is_action_just_pressed("camera_inspect"):
 		_inspect_on = not _inspect_on
+
+	if Input.is_action_just_pressed("camera_pitch_toggle"):
+		_pitch_unlocked = not _pitch_unlocked
+		# Locking SNAPS back to the default rather than easing there. An eased
+		# return would be prettier, but it would also fight the inspect blend
+		# for ownership of the same value; snapping is unambiguous, and F12 is
+		# a deliberate press rather than something brushed by accident.
+		if not _pitch_unlocked:
+			set_pitch(_default_pitch)
 
 	# Only zooms the gameplay framing — inspect mode has its own fixed
 	# distance for judging poses up close, and scrolling shouldn't disturb it.
@@ -110,6 +150,32 @@ func _process(delta: float) -> void:
 	pos.z = lerp(pos.z, goal.z, h_weight)
 	pos.y = lerp(pos.y, goal.y, v_weight)
 	global_position = pos
+
+
+## Middle-drag tilts the camera while pitch is unlocked.
+##
+## Handled here as an event rather than polled in _process because only the
+## event carries `relative` — the per-frame mouse DELTA. Polling would give the
+## cursor position, from which a delta would have to be reconstructed by
+## remembering last frame's, and that reconstruction breaks the moment the
+## window loses and regains focus.
+func _unhandled_input(event: InputEvent) -> void:
+	if not _pitch_unlocked or not (event is InputEventMouseMotion):
+		return
+	if not Input.is_action_pressed("camera_pitch_drag"):
+		return
+	# Inspect mode drives pitch from inspect_pitch, so a drag now would write a
+	# value nothing displays and then surprise the player when they leave
+	# inspect. Refusing outright is clearer than a silent partial effect.
+	if _inspect_on:
+		return
+	var amount: float = event.relative.y * pitch_drag_speed
+	set_pitch(pitch + (-amount if invert_pitch_drag else amount))
+
+
+## True while middle-drag may tilt the camera.
+func is_pitch_unlocked() -> bool:
+	return _pitch_unlocked
 
 
 ## Jump straight to the target with no smoothing. Call after teleporting the
@@ -146,7 +212,7 @@ func set_yaw(value: float) -> void:
 
 
 func set_pitch(value: float) -> void:
-	pitch = value
+	pitch = clampf(value, MIN_PITCH, MAX_PITCH)
 	_apply_rig_rotation()
 
 

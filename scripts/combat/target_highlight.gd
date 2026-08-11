@@ -34,11 +34,11 @@ const RIM_SHADER := preload("res://resources/shaders/target_rim.gdshader")
 @export var rim_color := Color(1.0, 0.62, 0.1)
 ## How tightly the glow hugs the silhouette. Raise to thin the band, lower to
 ## spread it across the surface.
-@export_range(0.5, 8.0, 0.1) var rim_power := 3.4
-@export_range(0.0, 4.0, 0.05) var rim_strength := 1.25
+@export_range(0.5, 8.0, 0.1) var rim_power := 2.8
+@export_range(0.0, 4.0, 0.05) var rim_strength := 1.7
 ## Faint even glow beneath the rim, so a surface turned flat to the camera does
 ## not read as unselected. See the shader for why this is not zero.
-@export_range(0.0, 0.5, 0.01) var fill := 0.03
+@export_range(0.0, 0.5, 0.01) var fill := 0.05
 
 ## The meshes this has applied the rim to, so they can be put back exactly as
 ## they were.

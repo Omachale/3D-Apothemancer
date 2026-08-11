@@ -40,11 +40,13 @@ func _process(delta: float) -> void:
 		# they differ while the inspect camera is engaged.
 		var cam_dist: float = Game.camera_rig.get_active_distance()
 		var mode := "  [inspect]" if Game.camera_rig.is_inspecting() else ""
+		if Game.camera_rig.is_pitch_unlocked():
+			mode += "  [pitch: drag MMB]"
 		lines.append("cam   yaw %.0f  dist %.1f%s" % [Game.camera_rig.yaw, cam_dist, mode])
 
 	lines.append("")
 	lines.append("WASD move · Shift run · Q/E turn cam · scroll zoom · "
-		+ "Tab target · Esc clear · F3 hud · F5 rain · F12 shot")
+		+ "Tab target · Esc clear · F3 hud · F5 rain · F12 pitch")
 	_label.text = "\n".join(lines)
 
 
