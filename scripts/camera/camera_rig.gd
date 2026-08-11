@@ -12,8 +12,11 @@
 ## which is the Fallout / Diablo sort of scale asked for.
 
 @export_group("Framing")
-## Rotation around the world Y axis. 45 gives the classic diagonal view.
-@export_range(-180.0, 180.0, 1.0) var yaw := 45.0: set = set_yaw
+## Rotation around the world Y axis. 0 faces due North (-Z) — see
+## [[DESIGN_GOALS.md]]'s compass note. 45 gives the classic diagonal view;
+## the default is 0 so the game opens facing North, at the cost of the
+## diagonal look for that first frame until the player rotates or moves.
+@export_range(-180.0, 180.0, 1.0) var yaw := 0.0: set = set_yaw
 ## Downward tilt. -90 would be straight down; -50 keeps some sense of height.
 @export_range(-89.0, -5.0, 1.0) var pitch := -45.0: set = set_pitch
 ## How far the camera sits back along the view ray.

@@ -31,6 +31,42 @@ The world exists to support that experimentation. It is not the product.
 - **Assets come from free packs or procedural generation**, not from
   hand-modelling.
 
+## Compass directions
+
+World axes have compass names, purely for talking about the world in
+conversation and comments — nothing in code reads a "north" value, this is
+naming only:
+
+| Compass | Godot axis |
+|---|---|
+| North | -Z |
+| South | +Z |
+| East | +X |
+| West | -X |
+
+Chosen to be **axis-aligned with zero rotation**, matching Godot's own
+default forward (-Z) and right (+X) — so "facing north" is literally the
+engine's un-rotated default orientation, not a rotated frame layered on top.
+`camera_rig.gd`'s default `yaw` is `0.0` for exactly this reason: at yaw 0 the
+rig's forward is bare -Z, so the game now opens facing North by construction,
+not by a coincidence that would break the next time yaw's default changes.
+
+Do not confuse this with `Wind.direction_degrees`, which is its own unrelated
+0-360 system measured from +Z (**South** in this table) rotating toward +X —
+see the doc comment on that property. A wind reading of "-45 degrees" is not
+"45 degrees west of north"; converting between the two means going through
+raw XZ vectors, not subtracting one offset from the other.
+
+**Known tension, not yet resolved:** the yaw-0 default trades away the
+diagonal "isometric" framing (see Framing note in `camera_rig.gd`) — looking
+straight down an axis instead of at 45 degrees reads flatter and was the
+reason 45 was chosen originally. It may also have re-broken the "wind
+roughly perpendicular to camera yaw" tuning documented under *Things learned*
+below: that fix assumed yaw 45; at yaw 0, wind's current -45-degree heading
+is closer to *parallel* with the camera's view axis than perpendicular to it,
+which is the exact failure mode that note warns about. Not re-tuned yet —
+check grass sway is still visible on screen before relying on this default.
+
 ## Feature status
 
 **1. Spell-casting animation — done (placeholder).**
