@@ -18,6 +18,16 @@ extends Node
 ##         which is what you want when timing a shot against an animation
 ##     --cast-at=1.0
 ##         fire a single cast
+##     --click-npc-at=2.0
+##         aim the cursor at the nearest targetable NPC and click it, which is
+##         how you exercise selection: unlike --cast-at (which calls the caster
+##         directly and never touches the input system) this drives the real
+##         button, so it covers mouse -> raycast -> selection. Prints what ended
+##         up selected, so a failure says whether the pick or the UI was at
+##         fault. Do NOT combine with --drive=cast_primary or --mouse: --drive
+##         holds the button from frame one, so the press edge this needs happens
+##         before the cursor is aimed and never comes again, and --mouse re-warps
+##         the cursor every frame, dragging it off whatever this aimed at.
 ##     --at=-26,0.5,-2
 ##         drop the player at a world position on the first frame, so a test
 ##         does not have to start with a thirty-second walk across the map at that time
@@ -53,6 +63,10 @@ var _log_accum := 0.0
 var _elapsed := 0.0
 var _cast_at := -1.0
 var _cast_done := false
+var _click_npc_at := -1.0
+## 0 aim, 1 press, 2 release, 3 report, 4 done.
+var _click_npc_stage := 0
+var _click_npc_screen := Vector2.ZERO
 var _cam_override := Vector3.ZERO
 var _has_cam_override := false
 var _cam_applied := false
@@ -73,7 +87,8 @@ func _ready() -> void:
 	_parse_args()
 	set_process(_shot_path != "" or not _driven_actions.is_empty()
 		or _log_interval > 0.0 or _cast_at >= 0.0 or _has_cam_override
-		or _has_mouse_override or _has_spawn_at or _wind_log_interval > 0.0)
+		or _has_mouse_override or _has_spawn_at or _wind_log_interval > 0.0
+		or _click_npc_at >= 0.0)
 	for action in _driven_actions:
 		if InputMap.has_action(action):
 			Input.action_press(action)
@@ -93,6 +108,8 @@ func _parse_args() -> void:
 			_log_interval = float(arg.substr("--log=".length()))
 		elif arg.begins_with("--shot-at="):
 			_shot_at = float(arg.substr("--shot-at=".length()))
+		elif arg.begins_with("--click-npc-at="):
+			_click_npc_at = float(arg.substr("--click-npc-at=".length()))
 		elif arg.begins_with("--cast-at="):
 			_cast_at = float(arg.substr("--cast-at=".length()))
 		elif arg.begins_with("--cam="):
@@ -133,6 +150,7 @@ func _process(delta: float) -> void:
 	_tick_camera()
 	_tick_mouse()
 	_tick_cast()
+	_tick_click_npc()
 	_tick_wind_log(delta)
 
 	# Driven actions have to be re-pressed: anything that consumes them with
@@ -260,6 +278,82 @@ func _log_npcs() -> void:
 ## There is nothing to mirror now: wind.gd computes the gusts and hands the
 ## same numbers to both this log and the shaders, so the readout cannot
 ## disagree with the screen.
+## Clicks the nearest targetable NPC, for exercising selection end to end.
+##
+## Aims by UNPROJECTING the NPC's own world position to screen coordinates
+## rather than taking a hand-guessed viewport fraction, so this keeps hitting
+## what it means to hit at any camera angle, zoom or window size — a guessed
+## fraction is right for exactly one framing and silently misses in every other.
+##
+## Distinct from --cast-at, which calls SpellCaster.try_cast() directly and so
+## never touches the input system at all. This drives the real button, which is
+## the only way to cover the mouse -> raycast -> selection path.
+##
+## The click is injected with Input.parse_input_event rather than
+## Input.action_press, and the difference is not cosmetic. action_press sets the
+## action pressed on the spot, and is_action_just_pressed is then only true for
+## the remainder of THAT frame — but this autoload is registered after
+## Targeting, so it processes after it, and Targeting would never once see the
+## press. A parsed event goes through the normal input pipeline instead and is
+## visible to every poller on the following frame regardless of node order.
+func _tick_click_npc() -> void:
+	if _click_npc_at < 0.0 or _elapsed < _click_npc_at or _click_npc_stage > 3:
+		return
+	match _click_npc_stage:
+		0:
+			var npc := _nearest_targetable_npc()
+			if npc == null:
+				push_error("DevTools: --click-npc-at but no targetable NPC was found.")
+				_click_npc_stage = 4
+				return
+			var camera: Camera3D = Game.camera_rig.get_camera()
+			# Aimed at the body rather than the feet, so the ray meets the
+			# collider instead of passing under it.
+			_click_npc_screen = camera.unproject_position(npc.global_position + Vector3.UP)
+			Input.warp_mouse(_click_npc_screen)
+			print("DevTools: aiming at %s, screen %s" % [npc.name, _click_npc_screen])
+			_click_npc_stage = 1
+		1:
+			_send_click(true)
+			_click_npc_stage = 2
+		2:
+			_send_click(false)
+			_click_npc_stage = 3
+		3:
+			# Reported rather than left for a screenshot to imply: a missing
+			# panel could equally be a failed pick or a broken panel, and those
+			# want different fixes.
+			var selected: Node3D = Targeting.current
+			print("DevTools: after click, target = %s" % (
+				selected.name if selected else "<none>"))
+			_click_npc_stage = 4
+
+
+func _send_click(pressed: bool) -> void:
+	var event := InputEventMouseButton.new()
+	event.button_index = MOUSE_BUTTON_LEFT
+	event.pressed = pressed
+	event.position = _click_npc_screen
+	event.global_position = _click_npc_screen
+	Input.parse_input_event(event)
+
+
+func _nearest_targetable_npc() -> Node3D:
+	var player: Node3D = Game.player
+	if player == null or Game.current_zone == null or Game.camera_rig == null:
+		return null
+	var best: Node3D = null
+	var best_distance := INF
+	for node in Game.current_zone.find_children("*", "CharacterBody3D", true, false):
+		if node == player or not (node.get("targetable") as bool):
+			continue
+		var distance: float = player.global_position.distance_to(node.global_position)
+		if distance < best_distance:
+			best_distance = distance
+			best = node
+	return best
+
+
 func _tick_wind_log(delta: float) -> void:
 	if _wind_log_interval <= 0.0:
 		return
