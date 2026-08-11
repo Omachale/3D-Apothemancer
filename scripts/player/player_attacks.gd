@@ -20,7 +20,7 @@ extends Node
 ## cursor may sit up to HALF this either side of the target before the shot
 ## stops being helped and simply goes where it was pointed. Deliberately
 ## generous, so it is felt rather than fought.
-@export_range(0.0, 180.0, 1.0) var aim_assist_arc_degrees := 60.0
+@export_range(0.0, 180.0, 1.0) var aim_assist_arc_degrees := 90.0
 ## Height above a target's origin that shots are aimed at, so bolts arrive at
 ## chest height instead of through the feet. Matches npc_controller.gd's own
 ## aim_height, which is how the NPCs already aim at the player.

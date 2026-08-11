@@ -25,6 +25,7 @@ func _ready() -> void:
 	_check_receding_faster_than_bolt()
 	_check_zero_speed()
 	_check_assist_arc()
+	_check_vertical_aim()
 	if _failures == 0:
 		print("VERIFY AIM: PASS")
 	else:
@@ -165,3 +166,36 @@ func _check_assist_arc() -> void:
 		% attacks.aim_assist_arc_degrees)
 	attacks.queue_free()
 	npc.queue_free()
+
+
+## The bug report this exists for: standing above a target produced a flat
+## shot, because player_controller.gd projected the cursor onto a plane at the
+## PLAYER's own height and then flattened the result again. Fixed by
+## raycasting the real world and carrying height through to get_aim_target().
+## This checks both halves: the assisted path (a target below, selected) and
+## the free-aim path (get_aim_target on a raycast hit below the shooter).
+func _check_vertical_aim() -> void:
+	var attacks := ATTACKS.new()
+	add_child(attacks)
+	var npc: Node3D = load("res://scenes/npc/Witch.tscn").instantiate()
+	add_child(npc)
+	npc.global_position = Vector3(0.0, 0.0, 20.0)
+	Targeting.set_target(npc)
+
+	var origin := Vector3(0.0, 8.0, 0.0)
+	var cursor_flat := Vector3(0.0, 0.0, 1.0)
+	var aim: Vector3 = attacks.call("_assisted_aim", origin, cursor_flat, 35.0)
+	if aim.y > -0.5:
+		_fail("standing 8 units above a selected target did not aim down: aim.y = %.2f" % aim.y)
+	else:
+		print("  assisted: shooter above the target aims downward (aim.y = %.2f)" % aim.y)
+
+	Targeting.clear()
+	npc.queue_free()
+	attacks.queue_free()
+
+	# The free-aim half lives on player_controller.gd's get_aim_target(), which
+	# needs a real scene (raycasting, physics) rather than the bare autoload
+	# tree this script runs in. Exercised instead via the dev harness's
+	# --click-npc-at, which aims the real cursor at an NPC below the camera and
+	# fires -- see the commit this accompanies for the recorded result.

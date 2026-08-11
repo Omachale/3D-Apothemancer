@@ -87,15 +87,17 @@ func _physics_process(delta: float) -> void:
 ## tree; [param from] is where it appears, [param aim] the way it travels.
 func launch(from: Vector3, aim: Vector3) -> void:
 	global_position = from
-	var flat := Vector3(aim.x, aim.y, aim.z)
-	if flat.length_squared() > 0.001:
-		direction = flat.normalized()
+	if aim.length_squared() > 0.001:
+		direction = aim.normalized()
 	# Turns the orb to face its own travel direction so elongation (a scale
 	# along local Z, applied in _ready) stretches it the right way. Skipped
-	# when there is nothing to stretch — aim is always near-horizontal here
-	# (see SpellCaster's flattened aim_direction), so look_at has no reason to
-	# hit its degenerate case, but there is no need to pay for it either.
-	if elongation != 1.0:
+	# when there is nothing to stretch.
+	#
+	# look_at's degenerate case is a direction parallel to its up vector, i.e.
+	# a shot straight up or down. Aim used to be flattened so that could not
+	# happen; it now carries height, so guard it rather than relying on an
+	# assumption that is no longer true.
+	if elongation != 1.0 and absf(direction.dot(Vector3.UP)) < 0.999:
 		look_at(global_position + direction, Vector3.UP)
 
 

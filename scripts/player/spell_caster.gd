@@ -133,10 +133,16 @@ func _advance(delta: float) -> void:
 				_timer -= windup_time
 				phase = Phase.RELEASE
 				var body := get_parent() as Node3D
+				var origin := get_cast_origin()
 				var dir := Vector3.FORWARD
-				if body and "aim_direction" in body:
+				# Prefer the 3D aim point over the flattened direction, so a
+				# shot can travel up or down. aim_direction is kept as the
+				# fallback for any caster whose owner does not provide one.
+				if body and body.has_method("get_aim_target"):
+					dir = body.get_aim_target() - origin
+				elif body and "aim_direction" in body:
 					dir = body.aim_direction
-				cast_released.emit(get_cast_origin(), dir)
+				cast_released.emit(origin, dir)
 		Phase.RELEASE:
 			if _timer >= release_time:
 				_timer -= release_time

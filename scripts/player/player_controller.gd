@@ -63,9 +63,19 @@ signal state_changed(new_state: State)
 ## is padded well past the worst case rather than tuned to the exact number.
 @export var ground_anchor_radius := 16.0
 
-## Where on the ground the mouse currently points, at the player's foot height.
+## Height above whatever the cursor is over that shots are aimed at. Set to
+## roughly muzzle height on purpose: pointing at flat ground level with the
+## player then fires LEVEL, where aiming at the ground point itself would send
+## every shot into the dirt a few paces ahead.
+@export_range(0.0, 3.0, 0.05) var aim_height := 1.1
+
+## The world point the mouse currently points AT — on terrain, a prop, or an
+## enemy, at that thing's real height rather than the player's.
 var aim_point := Vector3.ZERO
-## Normalised, flattened direction from the player toward [member aim_point].
+## Normalised, FLATTENED direction from the player toward [member aim_point].
+## Deliberately still flat: this drives which way the character turns, and a
+## character should not lean back to shoot uphill. Shots use
+## [method get_aim_target] instead, which keeps the height.
 var aim_direction := Vector3.FORWARD
 
 var state: State = State.IDLE
@@ -76,6 +86,9 @@ var _move_velocity := Vector3.ZERO
 ## External shove, decaying, added on top of the above.
 var _knockback := Vector3.ZERO
 var _run_toggled := false
+## Long enough to reach anything the camera can see at any zoom.
+const AIM_RAY_LENGTH := 500.0
+
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 9.8)
 ## Optional, exactly as on npc_controller.gd: no Health child means the player
 ## simply cannot be hurt, rather than erroring.
@@ -256,18 +269,49 @@ func _update_run_toggle() -> void:
 		_run_toggled = not _run_toggled
 
 
+## Finds what the cursor is over by RAYCASTING the world, not by projecting
+## onto a flat plane.
+##
+## The plane projection this replaced sampled at the player's own foot height,
+## which meant aim_point was always at the player's altitude and the aim
+## direction was always horizontal — so standing above something, there was no
+## way to express "shoot down at it". Raycasting returns the real height of
+## whatever is under the cursor, so aiming follows the ground.
+##
+## The plane projection survives as the FALLBACK, for a cursor over open sky
+## where the ray hits nothing. Without it, aiming at the horizon would leave
+## aim_point at wherever it was last frame.
 func _update_aim() -> void:
 	if Game.camera_rig == null:
 		return
 	var mouse := get_viewport().get_mouse_position()
-	var hit: Variant = Game.camera_rig.screen_point_to_ground(mouse, global_position.y)
-	if hit == null:
-		return
-	aim_point = hit
+	var camera: Camera3D = Game.camera_rig.get_camera()
+	var found := false
+	if camera:
+		var from := camera.project_ray_origin(mouse)
+		var query := PhysicsRayQueryParameters3D.create(
+			from, from + camera.project_ray_normal(mouse) * AIM_RAY_LENGTH,
+			Layers.SOLID | Layers.ENEMY)
+		var hit := get_world_3d().direct_space_state.intersect_ray(query)
+		if not hit.is_empty():
+			aim_point = hit["position"]
+			found = true
+	if not found:
+		var plane_hit: Variant = Game.camera_rig.screen_point_to_ground(mouse, global_position.y)
+		if plane_hit == null:
+			return
+		aim_point = plane_hit
 	var flat := aim_point - global_position
 	flat.y = 0.0
 	if flat.length_squared() > 0.001:
 		aim_direction = flat.normalized()
+
+
+## The 3D point shots should travel toward — what the cursor is over, lifted to
+## [member aim_height]. This is what carries the vertical part of aiming;
+## [member aim_direction] stays flat for character facing.
+func get_aim_target() -> Vector3:
+	return aim_point + Vector3.UP * aim_height
 
 
 func _face(direction: Vector3, delta: float) -> void:
