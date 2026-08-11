@@ -224,6 +224,12 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	# Same reasoning as the editor-hint guard in _ready(): this node exists in
+	# the editor too (Zone.build() runs there), but Game is not fully
+	# constructed outside actual play, so touching Game.player every frame via
+	# _rescan() would error continuously rather than just once at startup.
+	if Engine.is_editor_hint():
+		return
 	_timer += delta
 	if _timer >= check_interval:
 		_timer = 0.0

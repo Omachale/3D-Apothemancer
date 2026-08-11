@@ -1,0 +1,17 @@
+[gd_resource type="ShaderMaterial" load_steps=4 format=3]
+
+[ext_resource type="Shader" path="res://resources/shaders/tree_sway.gdshader" id="1"]
+[ext_resource type="Texture2D" path="res://assets/models/pine-leaf-diff.dds" id="2"]
+[ext_resource type="Texture2D" path="res://assets/models/pine-leaf-norm.dds" id="3"]
+
+[resource]
+shader = ExtResource("1")
+shader_parameter/albedo_texture = ExtResource("2")
+shader_parameter/normal_texture = ExtResource("3")
+shader_parameter/sway_distance = 0.525
+shader_parameter/tree_height = 4.2
+shader_parameter/bend_curve = 1.6
+shader_parameter/idle_distance = 0.006
+shader_parameter/idle_speed = 2.0
+shader_parameter/alpha_scissor_threshold = 0.5
+shader_parameter/normal_softening = 0.15

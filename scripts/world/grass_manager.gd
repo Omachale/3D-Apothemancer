@@ -136,6 +136,13 @@ var _timer := 0.0
 
 
 func _process(delta: float) -> void:
+	# This node exists in the editor too (Zone.build() runs there), but Game
+	# is not fully constructed outside actual play — see the identical guard
+	# in terrain_manager.gd's _ready(). Without this, _rescan() touches
+	# Game.player every frame and errors continuously while the scene is just
+	# open for editing, not only during Play.
+	if Engine.is_editor_hint():
+		return
 	_timer += delta
 	if _timer >= check_interval:
 		_timer = 0.0

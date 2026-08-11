@@ -25,11 +25,13 @@ extends Node
 ##         override the camera's yaw / pitch / distance, e.g. to get a close
 ##         side-on view of the character for judging a pose
 ##     --wind-log=0.5
-##         print the live wind globals plus the shader's own gust math,
-##         evaluated in GDScript at a fixed world point, every N seconds.
-##         For verifying gust timing/position as numbers instead of guessing
-##         from screenshots, which cannot tell a travelling band apart from
-##         independent per-blade jitter.
+##         every N seconds, print the live wind settings and one line per
+##         gust currently alive — position, radius, strength, age — plus the
+##         combined intensity at --wind-log-at. These are the same numbers
+##         wind.gd hands the shaders, so this is authoritative rather than a
+##         reconstruction. For verifying gust timing/position without
+##         guessing from screenshots, which cannot tell a travelling patch
+##         apart from independent per-blade jitter.
 ##     --mouse=0.95,0.5
 ##         hold the mouse at that fraction of the viewport. The character turns
 ##         to face the mouse while casting, so without this the pose a
@@ -61,7 +63,10 @@ var _has_spawn_at := false
 var _spawn_applied := false
 var _wind_log_interval := 0.0
 var _wind_log_accum := 0.0
-var _wind_log_at := Vector2(-40.0, -34.0) # HillsideMeadow centre, the usual test spot.
+## Where combined gust intensity is sampled. Defaults to the player's spawn
+## point, since gusts now spawn around wherever the player is rather than
+## around the world origin — a fixed far-off probe would usually read zero.
+var _wind_log_at := Vector2(10.0, 22.0)
 
 
 func _ready() -> void:
@@ -245,11 +250,16 @@ func _log_npcs() -> void:
 		])
 
 
-## Mirrors grass.gdshader's gust math in GDScript so gust timing/position can
-## be read as printed numbers instead of inferred from screenshots — two
-## frames a moment apart always differ because of the idle layer, so a
-## screenshot diff cannot prove a gust happened, only that *something* moved.
-## Keep this in sync with gust_lane() in grass.gdshader if that changes.
+## Prints the live gusts so gust timing/position can be read as numbers rather
+## than inferred from screenshots — two frames a moment apart always differ
+## because of the idle layer, so a screenshot diff cannot prove a gust
+## happened, only that *something* moved.
+##
+## This used to be a hand-written GDScript MIRROR of grass.gdshader's gust
+## math, which had to be kept in step by hand and twice silently didn't be.
+## There is nothing to mirror now: wind.gd computes the gusts and hands the
+## same numbers to both this log and the shaders, so the readout cannot
+## disagree with the screen.
 func _tick_wind_log(delta: float) -> void:
 	if _wind_log_interval <= 0.0:
 		return
@@ -258,90 +268,18 @@ func _tick_wind_log(delta: float) -> void:
 		return
 	_wind_log_accum = 0.0
 
-	var t: float = _elapsed
-	# RenderingServer.global_shader_parameter_get() returns Nil at runtime —
-	# it only reliably works from the editor — so read the canonical values
-	# straight off the Wind autoload instead, which is what actually pushed
-	# them to the shader in the first place.
-	var radians := deg_to_rad(Wind.direction_degrees)
-	var direction := Vector2(sin(radians), cos(radians))
-	var strength: float = Wind.strength
-	var speed: float = Wind.speed
-	var gust_width: float = Wind.gust_width
-	var gust_period: float = Wind.gust_period
-
-	var mat: ShaderMaterial = load("res://resources/materials/grass_blades.tres")
-	var travel_range: float = mat.get_shader_parameter("wind_travel_range")
-	var lifetime: float = mat.get_shader_parameter("gust_lifetime")
-	var direction_variance: float = Wind.gust_direction_variance
-	var ease_fraction: float = mat.get_shader_parameter("gust_ease_fraction")
-
-	var dir := direction.normalized()
-	var perp := Vector2(-dir.y, dir.x)
-	var seeds := [0.11, 0.53, 0.79, 0.97]
-	var total := 0.0
-	var active: Array = []
-	for seed in seeds:
-		var v := _gust_lane_value(_wind_log_at, dir, perp, seed, t,
-			speed, gust_width, gust_period, travel_range, lifetime,
-			direction_variance, ease_fraction)
-		total += v
-		if v > 0.001:
-			active.append("%.2f" % v)
-	total = minf(total, 1.4)
-	print("wind t=%6.2f  at=(%.0f,%.0f)  dir=(%.2f,%.2f) strength=%.2f speed=%.2f  gust=%.3f  active_lanes=%s" % [
-		t, _wind_log_at.x, _wind_log_at.y, dir.x, dir.y, strength, speed, total,
-		"[" + ", ".join(active) + "]" if not active.is_empty() else "none",
+	var gusts := Wind.get_gusts()
+	print("wind t=%6.2f  dir=%.0f deg  strength=%.2f speed=%.2f  live=%d/%d  gust_at(%.0f,%.0f)=%.3f" % [
+		_elapsed, Wind.direction_degrees, Wind.strength, Wind.speed,
+		gusts.size(), Wind.MAX_GUSTS,
+		_wind_log_at.x, _wind_log_at.y, Wind.gust_value_at(_wind_log_at),
 	])
-
-
-func _hash2(a: float, b: float) -> float:
-	return fmod(sin(a * 12.9898 + b * 78.233) * 43758.5453, 1.0)
-
-
-func _gust_lane_value(xz: Vector2, dir: Vector2, perp: Vector2, lane_seed: float,
-		t: float, speed: float, gust_width: float, gust_period: float,
-		travel_range: float, lifetime: float, direction_variance: float,
-		ease_fraction: float) -> float:
-	lifetime = maxf(lifetime, 0.5)
-	var wait_min: float = maxf(gust_period * 0.6, 0.1)
-	var wait_max: float = maxf(gust_period * 1.4, wait_min + 0.1)
-	var cycle_length: float = lifetime + wait_max
-	var local_time: float = t + lane_seed * 4096.0
-	var cycle_time: float = fmod(local_time, cycle_length)
-	var cycle_index: float = floor(local_time / cycle_length)
-
-	var wait: float = lerp(wait_min, wait_max, absf(_hash2(cycle_index, lane_seed)))
-	if cycle_time < wait or cycle_time > wait + lifetime:
-		return 0.0
-	var since_spawn: float = cycle_time - wait
-
-	# This gust's own drift direction — mirrors gust_lane()'s drift_angle in
-	# grass.gdshader exactly, including the +1.53 hash offset, so the two
-	# cannot silently disagree about which gust a given (cycle_index,
-	# lane_seed) actually is.
-	var drift_angle := deg_to_rad(lerp(-direction_variance, direction_variance,
-		absf(_hash2(cycle_index + 1.53, lane_seed))))
-	var ca := cos(drift_angle)
-	var sa := sin(drift_angle)
-	var gust_dir := Vector2(dir.x * ca - dir.y * sa, dir.x * sa + dir.y * ca)
-	var gust_perp := Vector2(-gust_dir.y, gust_dir.x)
-
-	var travel_dist: float = speed * lifetime
-	var spawn_along: float = lerp(-travel_range, travel_range,
-		absf(_hash2(cycle_index + 0.37, lane_seed))) - travel_dist * 0.5
-	var spawn_lateral: float = lerp(-travel_range, travel_range,
-		absf(_hash2(cycle_index + 0.71, lane_seed)))
-
-	var center: Vector2 = gust_dir * (spawn_along + speed * since_spawn) + gust_perp * spawn_lateral
-	var radius: float = maxf(gust_width, 0.5)
-	var dist: float = xz.distance_to(center)
-	var spatial: float = exp(-(dist * dist) / (radius * radius))
-
-	var fade_time: float = lifetime * ease_fraction
-	var ramp: float = clampf(minf(since_spawn, lifetime - since_spawn) / maxf(fade_time, 0.01), 0.0, 1.0)
-	var temporal: float = smoothstep(0.0, 1.0, ramp)
-	return spatial * temporal
+	for i in gusts.size():
+		var g: Dictionary = gusts[i]
+		var pos: Vector2 = g["pos"]
+		print("        gust %d  at=(%7.1f,%7.1f)  r=%.1f  strength=%.3f  age=%5.1f/%5.1f" % [
+			i, pos.x, pos.y, g["radius"], g["strength"], g["age"], g["lifetime"],
+		])
 
 
 func _unhandled_input(event: InputEvent) -> void:

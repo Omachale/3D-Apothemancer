@@ -31,6 +31,7 @@ const MAT_STONE := preload("res://resources/materials/stone.tres")
 const TREE_SCENE := preload("res://scenes/props/TreeProp.tscn")
 const ROCK_SCENE := preload("res://scenes/props/RockProp.tscn")
 const WALL_SCENE := preload("res://scenes/props/WallProp.tscn")
+const PINE_TREE_SCENE := preload("res://scenes/props/PineTreeProp.tscn")
 
 ## Where the player is dropped when this zone loads.
 @export var spawn_position := Vector3(10.0, 0.5, 22.0)
@@ -224,6 +225,25 @@ func get_props() -> Array:
 
 		{"scene": WALL_SCENE, "pos": Vector3(-14, 0, 24), "yaw": 0.0, "scale": 1.0},
 		{"scene": WALL_SCENE, "pos": Vector3(-35, 0, 6), "yaw": 90.0, "scale": 1.0},
+
+		# Pines (see PineTreeProp.tscn) — the first real tree-model asset, and
+		# the proving ground for wind response on something other than grass.
+		#
+		# Deliberately strung out ALONG THE WIND rather than scattered. Gusts
+		# spawn upwind of the player and travel down [member Wind.direction_degrees]
+		# (-45, so heading roughly -X/+Z), give or take
+		# Wind.gust_direction_variance, so stepping trees along that axis makes
+		# a gust visibly arrive at one, then the next, instead of moving
+		# everything at once. Sideways spread is kept within a gust's
+		# Wind.gust_width radius so each tree is actually struck rather than
+		# clipped by the patch's soft edge, and all sit clear of the spawn
+		# point rather than on top of the player. If direction_degrees changes,
+		# this line stops aligning with the wind and wants re-laying.
+		{"scene": PINE_TREE_SCENE, "pos": Vector3(21, 0, 13), "yaw": 200.0, "scale": 0.9},
+		{"scene": PINE_TREE_SCENE, "pos": Vector3(17, 0, 21), "yaw": 65.0, "scale": 1.15},
+		{"scene": PINE_TREE_SCENE, "pos": Vector3(15, 0, 18), "yaw": 0.0, "scale": 1.0},
+		{"scene": PINE_TREE_SCENE, "pos": Vector3(2, 0, 22), "yaw": 130.0, "scale": 1.05},
+		{"scene": PINE_TREE_SCENE, "pos": Vector3(-1, 0, 31), "yaw": 290.0, "scale": 0.95},
 	]
 
 

@@ -134,27 +134,35 @@ wind_strength={
 "type": "float",
 "value": 1.0
 }
-wind_speed={
-"type": "float",
-"value": 2.0
-}
-wind_gust_width={
-"type": "float",
-"value": 7.0
-}
-wind_gust_period={
-"type": "float",
-"value": 10.0
-}
 wind_turbulence={
 "type": "float",
 "value": 1.0
 }
-wind_gust_direction_variance={
-"type": "float",
-"value": 18.0
-}
 rain_sway_boost={
 "type": "float",
 "value": 1.1
+}
+wind_gust_0={
+"type": "vec4",
+"value": Vector4(0, 0, 7, 0)
+}
+wind_gust_1={
+"type": "vec4",
+"value": Vector4(0, 0, 7, 0)
+}
+wind_gust_2={
+"type": "vec4",
+"value": Vector4(0, 0, 7, 0)
+}
+wind_gust_3={
+"type": "vec4",
+"value": Vector4(0, 0, 7, 0)
+}
+wind_gust_4={
+"type": "vec4",
+"value": Vector4(0, 0, 7, 0)
+}
+wind_gust_5={
+"type": "vec4",
+"value": Vector4(0, 0, 7, 0)
 }
