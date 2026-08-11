@@ -43,7 +43,8 @@ func _process(delta: float) -> void:
 		lines.append("cam   yaw %.0f  dist %.1f%s" % [Game.camera_rig.yaw, cam_dist, mode])
 
 	lines.append("")
-	lines.append("WASD move · Shift run · Q/E turn cam · scroll zoom · F3 hud · F5 rain · F12 shot")
+	lines.append("WASD move · Shift run · Q/E turn cam · scroll zoom · "
+		+ "Tab target · Esc clear · F3 hud · F5 rain · F12 shot")
 	_label.text = "\n".join(lines)
 
 

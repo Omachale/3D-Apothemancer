@@ -49,6 +49,8 @@ var current: Node3D = null
 func _process(_delta: float) -> void:
 	if Input.is_action_just_pressed("target_clear"):
 		clear()
+	elif Input.is_action_just_pressed("target_cycle"):
+		cycle()
 	elif Input.is_action_just_pressed("cast_primary"):
 		_try_select_under_mouse()
 	_drop_if_gone()
@@ -68,6 +70,52 @@ func clear() -> void:
 
 func has_target() -> bool:
 	return current != null and is_instance_valid(current)
+
+
+## Step to the next target in range, wrapping at the end. With nothing
+## selected — or with the current selection no longer in the list — this picks
+## the nearest, so Tab is also the "just give me something" key.
+##
+## Ordered by distance from the player, not by screen position. Distance is
+## stable: it does not change when the camera rotates, so a given Tab press
+## lands on the same enemy regardless of which way the player happens to be
+## looking. Left-to-right screen order reads more naturally but reshuffles the
+## whole cycle every time the camera swings, which makes Tab unpredictable
+## exactly when a fight is moving.
+func cycle() -> void:
+	var candidates := targets_in_range()
+	if candidates.is_empty():
+		return  # Nothing to cycle to; leave whatever is selected alone.
+	# find() returns -1 when the current target is not a candidate, and -1 + 1
+	# is 0, so that case correctly falls through to the nearest.
+	var index := candidates.find(current)
+	set_target(candidates[(index + 1) % candidates.size()])
+
+
+## Every valid target within [method deselect_radius], nearest first.
+##
+## Walks the zone on demand rather than keeping a registry. That is a tree walk
+## per Tab press, which sounds wasteful and is not: it happens on a keystroke,
+## not per frame, over a scene holding a few hundred nodes. A registry would
+## buy nothing measurable and would add the classic failure of going stale when
+## something spawns, dies or streams out without deregistering.
+func targets_in_range() -> Array[Node3D]:
+	var found: Array[Node3D] = []
+	var player: Node3D = Game.player
+	if player == null or Game.current_zone == null:
+		return found
+	var radius := deselect_radius()
+	var origin := player.global_position
+	for node in Game.current_zone.find_children("*", "CharacterBody3D", true, false):
+		var body := node as Node3D
+		if body == player or not _is_targetable(body):
+			continue
+		if origin.distance_to(body.global_position) <= radius:
+			found.append(body)
+	found.sort_custom(func(a: Node3D, b: Node3D) -> bool:
+		return origin.distance_squared_to(a.global_position) \
+			< origin.distance_squared_to(b.global_position))
+	return found
 
 
 ## How far a target may get before it is dropped, derived from the camera's
