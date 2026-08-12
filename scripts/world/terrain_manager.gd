@@ -132,9 +132,10 @@ const CHUNK_SCRIPT := preload("res://scripts/terrain/terrain_chunk.gd")
 @export var map_half_extent := 0.0
 
 @export_group("Appearance")
-## How far each tile's hidden border apron hangs down. Must exceed the worst
-## height disagreement between neighbouring tiles of different size, or hairline
-## cracks show through — see TerrainChunk's note on skirts.
+## How far a LEVEL 0 tile's hidden border apron hangs down. Coarser rings scale
+## it up — see [method skirt_depth_for]. Must exceed the worst height
+## disagreement between neighbouring tiles of different size, or hairline cracks
+## show through to the sky — see TerrainChunk's note on skirts.
 ##
 ## The ring layout is kind to this. Because tile sizes are powers of two and the
 ## grids are origin-aligned, a level-L tile's edge lies EXACTLY along a
@@ -608,12 +609,44 @@ func _rebuild(key: Vector3i, collision: bool) -> void:
 	chunk.build()
 
 
+## How deep a level-[param level] tile's skirt hangs: [member skirt_depth]
+## doubled per ring, matching the tile size.
+##
+## A FIXED DEPTH CANNOT WORK, and the reason is worth stating because a single
+## number looks obviously sufficient until it is measured. The crack a skirt
+## hides is the heightfield's deviation from a straight line drawn across one
+## coarse vertex spacing — so it is a property of the SPACING, and spacing
+## doubles every ring. Measured against this project's own land (see
+## verify_zone_layout.gd), the worst gap runs 0.07, 0.28, 0.97, 3.10, 8.87
+## metres from ring 0 to ring 4: roughly three-and-a-half times worse per ring,
+## because both the step and the curvature it cuts across grow together. One
+## depth deep enough for the outer ring would be absurd inches from the camera,
+## and one sized for the inner ring — which 2.0 was — leaves the outer rings
+## cracked open by several metres. That crack was real and predates rolling; the
+## SouthHill alone opens 8.68 m of it at ring 4.
+##
+## Doubling is deliberately gentler than the ~3.5x the gaps actually grow by,
+## and still covers them, because ring 0's 2.0 m starts with a lot of headroom
+## over its 0.07 m gap. Tying it to tile size instead of to the measurements
+## keeps the apron a constant FRACTION of each tile — the thing that decides
+## whether it can be seen from below — rather than a number that has to be
+## re-derived whenever the land changes.
+##
+## Aprons stay buried because neighbouring tiles are at most one level apart and
+## so never disagree by more than the gap above, which every depth here clears
+## several times over. The exception is the outermost tiles, whose aprons hang
+## into open space at [member horizon_distance] — but there is a visible world
+## edge there regardless, and hiding it is what task #17's distance fog is for.
+func skirt_depth_for(level: int) -> float:
+	return skirt_depth * pow(2.0, level)
+
+
 func _configure(chunk: TerrainChunk, level: int, collision: bool) -> void:
 	chunk.heightfield = heightfield
 	chunk.size = _tile_size(level)
 	chunk.resolution = tile_resolution
 	chunk.build_collision = collision
-	chunk.skirt_depth = skirt_depth
+	chunk.skirt_depth = skirt_depth_for(level)
 	chunk.vertices_per_batch = vertices_per_batch
 	chunk.material = material
 

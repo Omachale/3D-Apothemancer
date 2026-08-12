@@ -63,6 +63,14 @@ signal built
 @export_group("Wiring")
 @export var seed := 20240
 @export var material: Material = null
+## Spacing of the coarse height/slope grid [method _find_placements] samples
+## the heightfield on, when one is set. Every candidate blade then reads that
+## grid (a few array lookups and a lerp) instead of calling into the
+## heightfield itself — see the note there for why that distinction is the
+## whole point. 1 unit matches ring 0's own vertex spacing (terrain_manager.gd),
+## which is already the finest the ground mesh itself resolves to, so this
+## costs no visible accuracy.
+@export var height_sample_spacing := 1.0
 ## Where the ground is, when it is known as maths rather than as geometry.
 ##
 ## WITH one, each blade's spot is worked out by asking the heightfield directly.
@@ -86,8 +94,17 @@ var exclusions: Array = []
 ## spread over several frames instead of blocking one for its entire duration.
 ## A busy field otherwise reads as a stutter exactly when a streamed chunk
 ## starts building near the player — see grass_manager.gd.
-## 0 disables batching (finishes in one frame, same as before this existed).
-@export_range(0, 5000, 50) var samples_per_batch := 500
+##
+## Sized for the grid-sampling path (see [method _sample_grid]): a batch this
+## size costs under 1 ms of real work now that a candidate is a few array
+## lookups instead of a heightfield call, so the frame count a large field
+## needs to fill — the thing that actually decides wall-clock load time, since
+## each batch still waits a full frame regardless of how little of it the
+## batch used — is set by this number, not by per-blade cost. Raising it
+## trades a faster fill for a bigger (but still sub-frame) lump of work
+## whenever a batch boundary lands. 0 disables batching (finishes in one
+## frame, same as before this existed).
+@export_range(0, 8000, 50) var samples_per_batch := 3000
 
 var _multimesh_instance: MultiMeshInstance3D = null
 var _planted := 0
@@ -177,9 +194,30 @@ func _build() -> void:
 	# of view.
 	var reach := blade_height * (1.0 + height_variation) + 1.0
 	var half_extent := square_size * 0.5 if square_size > 0.0 else radius
+	# VERTICAL RANGE COMES FROM THE PLACEMENTS, NOT A FIXED BAND AROUND 0. This
+	# node sits at (x, 0, z) — see grass_manager.gd's _spawn — but a blade's
+	# local Y is the actual ground height at its spot (Heightfield.height_at,
+	# offset by nothing, since this node's own Y is always 0). On flat ground
+	# that is a couple of units and `reach` alone would cover it, which is
+	# almost certainly why this went unnoticed for as long as it did — but on
+	# rolling terrain, a hill, or the mountain, a single chunk can span tens of
+	# metres of real elevation. custom_aabb REPLACES Godot's automatic bounds
+	# entirely (it does not look at the real instance transforms once set), so
+	# a box sized for flat ground silently mis-culls every chunk whose ground
+	# is not near world Y=0 — which, once anything has relief, is most of
+	# them. The failure reads as exactly this: the chunk is fully built and
+	# correct, but whether it draws flips with camera angle, because the wrong
+	# box crosses the frustum edge at a different spot than the true geometry
+	# does — a threshold tied to where the camera (and so the player) is
+	# standing, not to loading.
+	var min_y := INF
+	var max_y := -INF
+	for p in placements:
+		min_y = minf(min_y, p.y)
+		max_y = maxf(max_y, p.y)
 	_multimesh_instance.custom_aabb = AABB(
-		Vector3(-half_extent - reach, -reach, -half_extent - reach),
-		Vector3((half_extent + reach) * 2.0, reach * 3.0, (half_extent + reach) * 2.0))
+		Vector3(-half_extent - reach, min_y - reach, -half_extent - reach),
+		Vector3((half_extent + reach) * 2.0, (max_y - min_y) + reach * 3.0, (half_extent + reach) * 2.0))
 	add_child(_multimesh_instance)
 
 	var total_usec := _work_usec + (Time.get_ticks_usec() - _mark_usec)
@@ -195,6 +233,16 @@ func _build() -> void:
 ## Where the ground IS comes either from the heightfield (arithmetic, instant,
 ## and answerable for terrain that has not been built yet) or, without one, from
 ## a downward physics ray per blade. See [member heightfield].
+##
+## WITH a heightfield, ground is read from a coarse grid built once up front
+## (see [method _sample_grid]), not from a fresh [method Heightfield.height_at]
+## per blade. A single lookup already costs several microseconds — three
+## octaves of noise plus a walk over every feature in the zone — and at tens
+## of thousands of candidates per chunk that is seconds of CPU per chunk, not
+## microseconds. The grid is exactly the same information at a resolution no
+## coarser than the ground mesh itself already uses (see
+## [member height_sample_spacing]), so nothing about the result looks
+## different; only how many times the heightfield gets asked does.
 func _find_placements(count: int) -> PackedVector3Array:
 	var space := get_world_3d().direct_space_state if heightfield == null else null
 	var rng := RandomNumberGenerator.new()
@@ -205,16 +253,20 @@ func _find_placements(count: int) -> PackedVector3Array:
 	var results := PackedVector3Array()
 	var origin := global_position
 	var square := square_size > 0.0
+	var half := square_size * 0.5 if square else radius
 	# Hoisted out of the loop. to_local() rebuilds this inverse on every call,
 	# and it was the single largest cost in placing a chunk of grass — far
 	# larger than working out where the ground is.
 	var to_local_xform := global_transform.affine_inverse()
 
+	var grid: Dictionary = {}
+	if heightfield != null:
+		grid = _sample_grid(origin, half)
+
 	for _i in count:
 		var x: float
 		var z: float
 		if square:
-			var half := square_size * 0.5
 			x = origin.x + rng.randf_range(-half, half)
 			z = origin.z + rng.randf_range(-half, half)
 		else:
@@ -235,11 +287,7 @@ func _find_placements(count: int) -> PackedVector3Array:
 
 		var spot: Variant = null
 		if heightfield != null:
-			# Height first, then the flatness test reusing it — see
-			# Heightfield.slope_cosine_at for why that is worth doing.
-			var h := heightfield.height_at(x, z)
-			if heightfield.slope_cosine_at(x, z, h) >= min_up:
-				spot = Vector3(x, h, z)
+			spot = _sample_from_grid(grid, origin, half, x, z, min_up)
 		else:
 			var query := PhysicsRayQueryParameters3D.create(
 				Vector3(x, origin.y + 60.0, z),
@@ -259,6 +307,69 @@ func _find_placements(count: int) -> PackedVector3Array:
 		results.append(to_local_xform * (spot as Vector3))
 
 	return results
+
+
+## Builds the coarse height/slope grid [method _find_placements] samples
+## candidates from, covering the square (2*half) centred on [param origin].
+## Runs [member Heightfield.height_at]/[method Heightfield.slope_cosine_at]
+## once per grid point rather than once per blade — for a 20-unit chunk at the
+## default 1-unit spacing that is 441 calls instead of tens of thousands.
+##
+## Returns a Dictionary rather than a class purely to keep this file free of
+## an extra type: `res` (grid points per axis), `step` (world units between
+## them), `h` (heights, row-major) and `up` (slope cosines, same layout and
+## order).
+func _sample_grid(origin: Vector3, half: float) -> Dictionary:
+	var spacing := maxf(height_sample_spacing, 0.05)
+	var res := maxi(2, int(ceil(2.0 * half / spacing)) + 1)
+	var step := (2.0 * half) / float(res - 1)
+	var h := PackedFloat32Array()
+	var up := PackedFloat32Array()
+	h.resize(res * res)
+	up.resize(res * res)
+	for gz in res:
+		var wz := origin.z - half + float(gz) * step
+		for gx in res:
+			var wx := origin.x - half + float(gx) * step
+			var height := heightfield.height_at(wx, wz)
+			var idx := gz * res + gx
+			h[idx] = height
+			up[idx] = heightfield.slope_cosine_at(wx, wz, height)
+	return {"res": res, "step": step, "h": h, "up": up}
+
+
+## One candidate's ground spot, read from the grid [method _sample_grid]
+## built: height bilinearly interpolated for a smooth surface, slope taken
+## from the nearest grid point since it is only ever compared against a
+## threshold — no visible loss at grid points a metre apart, and one lookup
+## instead of four plus a lerp. Returns null where the ground there is too
+## steep to plant on, matching the direct-sampling path this replaces.
+func _sample_from_grid(
+	grid: Dictionary, origin: Vector3, half: float, x: float, z: float, min_up: float
+) -> Variant:
+	var res: int = grid["res"]
+	var step: float = grid["step"]
+	var fx: float = clampf((x - (origin.x - half)) / step, 0.0, float(res - 1))
+	var fz: float = clampf((z - (origin.z - half)) / step, 0.0, float(res - 1))
+	var gx0 := mini(int(fx), res - 2)
+	var gz0 := mini(int(fz), res - 2)
+	var tx := fx - gx0
+	var tz := fz - gz0
+
+	var up: PackedFloat32Array = grid["up"]
+	# Nearest grid point, not bilinear — this only ever feeds a >= comparison.
+	var nx := gx0 + (1 if tx >= 0.5 else 0)
+	var nz := gz0 + (1 if tz >= 0.5 else 0)
+	if up[nz * res + nx] < min_up:
+		return null
+
+	var h: PackedFloat32Array = grid["h"]
+	var h00: float = h[gz0 * res + gx0]
+	var h10: float = h[gz0 * res + gx0 + 1]
+	var h01: float = h[(gz0 + 1) * res + gx0]
+	var h11: float = h[(gz0 + 1) * res + gx0 + 1]
+	var height := lerpf(lerpf(h00, h10, tx), lerpf(h01, h11, tx), tz)
+	return Vector3(x, height, z)
 
 
 ## Whether a spot falls inside any of the no-grass rectangles — see

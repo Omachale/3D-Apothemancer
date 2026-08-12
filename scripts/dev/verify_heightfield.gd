@@ -105,6 +105,114 @@ func _init() -> void:
 		print("FAIL overlapping features = %f, want 8 (summed)" % stacked.height_at(0.0, 0.0)); fails += 1
 	print("overlapping features sum: 5 + 3 -> 8.0")
 
+	# --- Levelling pads: the one feature that blends instead of summing. ---
+	# Built on deliberately lumpy ground, so "it is flat" is a real claim rather
+	# than something inherited from a flat base.
+	var padded := Heightfield.new()
+	padded.rolling_amplitude = 2.0
+	padded.rolling_frequency = 0.02
+	padded.features = [
+		{"type": "flatten", "pos": Vector2(40, -20),
+			"size": Vector2(16, 12), "falloff": 8.0},
+	]
+	var unlevelled := Heightfield.new()
+	unlevelled.rolling_amplitude = 2.0
+	unlevelled.rolling_frequency = 0.02
+
+	# The core must be level everywhere, not merely at the middle — that is the
+	# whole difference between a pad and a spot height.
+	var pad_level := padded.height_at(40.0, -20.0)
+	var core_spread := 0.0
+	var core_slope := 0.0
+	for i in 21:
+		for j in 21:
+			var px := 40.0 - 8.0 + 16.0 * float(i) / 20.0
+			var pz := -20.0 - 6.0 + 12.0 * float(j) / 20.0
+			core_spread = maxf(core_spread, absf(padded.height_at(px, pz) - pad_level))
+			# Slope is measured a quarter-unit either side of the point, so a
+			# sample sitting exactly on the core's edge reaches out into the
+			# falloff band and reports its slope rather than the core's. Inset
+			# by more than that: the claim being tested is that the core is
+			# level, not that the boundary is.
+			if absf(px - 40.0) < 7.5 and absf(pz + 20.0) < 5.5:
+				core_slope = maxf(core_slope, padded.slope_degrees_at(px, pz))
+	if core_spread > 0.001:
+		print("FAIL pad core varies by %f, want level" % core_spread); fails += 1
+	if core_slope > 0.01:
+		print("FAIL pad core slope %f deg, want 0" % core_slope); fails += 1
+	print("pad 16x12: core level to %.6f over 441 samples, slope %.4f deg" % [
+		core_spread, core_slope])
+
+	# Its level should be the height the land ALREADY had there, so the pad
+	# settles onto the ground rather than pinning it to an arbitrary number.
+	if not is_equal_approx(pad_level, unlevelled.height_at(40.0, -20.0)):
+		print("FAIL pad level %f, want the unlevelled surface's %f" % [
+			pad_level, unlevelled.height_at(40.0, -20.0)]); fails += 1
+	if is_zero_approx(pad_level):
+		print("FAIL pad landed at 0, so this proves nothing about following the land")
+		fails += 1
+	print("pad level %.3f matches the unlevelled surface at its centre" % pad_level)
+
+	# Past the falloff the land must be exactly as it would have been — a pad is
+	# local, and anything else would make placing one a world-wide edit.
+	var far_drift := 0.0
+	for i in 200:
+		var angle := TAU * float(i) / 200.0
+		var px := 40.0 + cos(angle) * 60.0
+		var pz := -20.0 + sin(angle) * 60.0
+		far_drift = maxf(far_drift, absf(padded.height_at(px, pz) - unlevelled.height_at(px, pz)))
+	if not is_zero_approx(far_drift):
+		print("FAIL pad changed the land %f at 60 units away" % far_drift); fails += 1
+	print("pad influence is local: 0.0 drift at 60 units out")
+
+	# The band between must be continuous — a pad exists to remove creases, so
+	# introducing one at its own edge would be self-defeating. Walked outward in
+	# small steps, asserting no sample jumps away from its neighbour.
+	var worst_step := 0.0
+	for i in 64:
+		var angle := TAU * float(i) / 64.0
+		var dir := Vector2(cos(angle), sin(angle))
+		var previous := pad_level
+		for j in range(1, 401):
+			var p := Vector2(40, -20) + dir * (30.0 * float(j) / 400.0)
+			var h := padded.height_at(p.x, p.y)
+			worst_step = maxf(worst_step, absf(h - previous))
+			previous = h
+	if worst_step > 0.25:
+		print("FAIL pad edge jumps %f over a 0.075-unit step" % worst_step); fails += 1
+	print("pad band is continuous: worst neighbouring-sample step %.4f" % worst_step)
+
+	# An explicit level overrides the default, for the case where a structure's
+	# height is fixed by something other than the land.
+	var pinned := Heightfield.new()
+	pinned.rolling_amplitude = 2.0
+	pinned.features = [{"type": "flatten", "pos": Vector2.ZERO,
+		"size": Vector2(10, 10), "falloff": 5.0, "level": 12.5}]
+	if not is_equal_approx(pinned.height_at(3.0, -4.0), 12.5):
+		print("FAIL explicit pad level ignored: %f" % pinned.height_at(3.0, -4.0)); fails += 1
+	print("explicit level 12.5 honoured across the core")
+
+	# A pad's steepness has to be measured, not predicted — see heightfield.gd.
+	# One levelling flat ground is flat; one cut into a hillside is not, and the
+	# check must be able to tell them apart or it is worth nothing.
+	var terraced := Heightfield.new()
+	terraced.features = [
+		{"pos": Vector2.ZERO, "radius": 40.0, "height": 30.0, "noise": 0.0},
+		{"type": "flatten", "pos": Vector2(22, 0),
+			"size": Vector2(10, 10), "falloff": 3.0},
+	]
+	var cut_slope: float = terraced.feature_max_slope_degrees(terraced.features[1])
+	if cut_slope < 50.0:
+		print("FAIL pad cut into a hillside measured %.1f deg, expected steep" % cut_slope)
+		fails += 1
+	var gentle_slope: float = padded.feature_max_slope_degrees(padded.features[0])
+	if gentle_slope > 50.0:
+		print("FAIL pad on gentle ground measured %.1f deg" % gentle_slope); fails += 1
+	if terraced.find_unclimbable_features(50.0).size() < 1:
+		print("FAIL unclimbable check missed a pad cut into a hillside"); fails += 1
+	print("pad slope measured: %.1f deg on gentle ground, %.1f deg cut into a hill" % [
+		gentle_slope, cut_slope])
+
 	# --- Rolling noise: undulates, stays inside its amplitude, is repeatable. ---
 	var rolling := Heightfield.new()
 	rolling.rolling_amplitude = 0.6

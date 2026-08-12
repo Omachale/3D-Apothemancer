@@ -10,9 +10,20 @@ extends Node3D
 ## same script serves every future zone by subclassing and overriding the
 ## layout functions.
 ##
-## Convention: a plate's Y is the surface you walk on. A staircase's Y is the
-## ground it starts from, and it ascends toward its own local +Z, so `yaw` aims
-## it. Set a staircase's rise to exactly match the plate it feeds.
+## CONVENTION: EVERY `pos` IS RELATIVE TO THE GROUND. The land undulates (see
+## [method get_heightfield]), so a Y written as an absolute world height would
+## mean "buried here, floating there" — every position below has its Y read as
+## clearance ABOVE the heightfield and is dropped onto it at build time. Nearly
+## all of them are therefore 0, meaning "standing on the land"; a plate's Y is
+## how far its walking surface rises above the ground it stands on.
+##
+## This is the same rule [member spawn_position] already used, and it is why the
+## numbers in this file did not have to change when rolling was turned on.
+##
+## A staircase starts from the ground and ascends toward its own local +Z, so
+## `yaw` aims it. Set a staircase's rise to exactly match the plate it feeds —
+## and put both on the same levelling pad, or the ground under each end moves
+## independently and the rise no longer matches.
 
 const PLATE_SCRIPT := preload("res://scripts/terrain/ground_plate.gd")
 const STAIRS_SCRIPT := preload("res://scripts/terrain/stairs.gd")
@@ -28,7 +39,6 @@ const MAT_GRASS := preload("res://resources/materials/ground_grass.tres")
 const MAT_HIGHLAND := preload("res://resources/materials/ground_highland.tres")
 const MAT_STONE := preload("res://resources/materials/stone.tres")
 
-const TREE_SCENE := preload("res://scenes/props/TreeProp.tscn")
 const ROCK_SCENE := preload("res://scenes/props/RockProp.tscn")
 const WALL_SCENE := preload("res://scenes/props/WallProp.tscn")
 const PINE_TREE_SCENE := preload("res://scenes/props/PineTreeProp.tscn")
@@ -56,17 +66,31 @@ var _heightfield: Heightfield = null
 ## Everything here is data. A future terrain-painting tool would write this list
 ## rather than anyone typing coordinates.
 ##
-## NOTE rolling_amplitude is deliberately 0, so open ground is exactly as flat
-## as the slab it replaces. That keeps this migration honest: the world should
-## look unchanged, and what changed is that it now streams and does not end.
-## Turning it up is the first thing to try once that is confirmed — but the
-## keep, terrace and stairs all assume the ground beneath them is level, so they
-## will need fitting to the land at the same time.
+## ROLLING IS ON NOW. It was held at 0 through the migration so the streamed
+## world could be compared against the flat slab it replaced and any difference
+## blamed on the streaming rather than on the land — that comparison is done.
+## 1.5 metres over a ~125-unit wavelength is swells, not hills: enough that open
+## ground reads as land from a low camera, gentle enough to walk over without
+## noticing. Hills are still features.
+##
+## EVERY FLAT-BOTTOMED STRUCTURE NEEDS A PAD UNDER IT. The keep, the terrace and
+## the staircase feeding it are rigid rectangles; on undulating ground they
+## float at one corner and sink at the other. A "flatten" feature levels the
+## ground beneath each one and eases back to the land around it — see
+## [Heightfield]'s note on the two passes. The rule when adding a structure is
+## that its footprint goes in [method get_buildings] or [method get_plates] AND
+## a pad covering it goes here, a little larger than the footprint so the blend
+## starts clear of the walls.
+##
+## The terrace pad deliberately covers its staircase too. Stairs rise by a fixed
+## amount to meet the plate above, so the ground they start from and the ground
+## the plate stands on have to be the SAME level — two pads at their own
+## separate levels would leave the top step short of the terrace or through it.
 func get_heightfield() -> Heightfield:
 	var field := Heightfield.new()
 	field.seed = 20240
 	field.base_elevation = 0.0
-	field.rolling_amplitude = 0.0
+	field.rolling_amplitude = 3.0
 	field.rolling_frequency = 0.008
 	field.features = [
 		# Was the "SouthHill" TerrainMound. Same centre, radius and height, so
@@ -74,13 +98,58 @@ func get_heightfield() -> Heightfield:
 		# rather than built.
 		{"type": "hill", "pos": Vector2(-46, -46),
 			"radius": 24.0, "height": 11.0, "noise": 1.9},
+
+		# EastMountain — a scale test for rolling/features, and a proving ground
+		# for a large landmark. 200m across, its nearest foot 20m east of spawn
+		# (spawn.x=10, so the foot sits at x=30; centre is the foot plus the
+		# 100m radius). height=47 with noise=1.5 measures a peak slope of ~38
+		# degrees (see feature_max_slope_degrees) — matching the SouthHill's own
+		# proven-climbable steepness, safely under the player's 50 degree limit
+		# even before accounting for the smoothing a real mesh adds. Rounded
+		# summit by construction (smoothstep is flat-tangent at d=0), so the
+		# flatten pad below settles onto the true peak height with nothing to
+		# override.
+		{"type": "plateau", "pos": Vector2(130, 22),
+			"radius": 100.0, "height": 47.0, "noise": 1.5, "flat_ratio": 0.15},
+
+		# Pads. Listed after the hill because pads apply to the finished additive
+		# surface, and a pad's default level is read from it — order within this
+		# list only matters between pads that overlap, and these two do not.
+		#
+		# StoneKeep, footprint 16x12 centred (-26,-14): one unit of margin all
+		# round so the blend never starts under a wall.
+		{"type": "flatten", "pos": Vector2(-26, -14),
+			"size": Vector2(18, 14), "falloff": 10.0},
+		# Terrace (20x20 centred (-25,20)) AND TerraceStairs (which start at
+		# z=32 and climb to z=30): one pad spanning z 8..34 so both sit on the
+		# same level, plus a unit of margin on x.
+		{"type": "flatten", "pos": Vector2(-25, 21),
+			"size": Vector2(22, 26), "falloff": 10.0},
+		# EastMountain summit: a level 20x20 platform for a future tower. The
+		# hill feature above is a PLATEAU, not a hill: its flat_ratio already
+		# holds the top exactly level out to radius 15, comfortably past the
+		# pad's own half-extent (10, ~14.1 at the rounded corners) — so this pad
+		# has almost nothing to reconcile and only exists to erase the noise
+		# ripple, not to fight the mountain's own slope. (A plain "hill" here
+		# was tried first: pinning a flat core near ITS curved summit forced
+		# the pad's shoulder to make up, in one falloff band, height the raw
+		# hill spreads over a much longer radius — 53.9 degrees at a 10-unit
+		# falloff, worse (52.9) at 36, because widening the band just reached
+		# further into the hill's own steepest ground. The plateau's genuinely
+		# flat top avoids the whole fight.)
+		{"type": "flatten", "pos": Vector2(130, 22),
+			"size": Vector2(20, 20), "falloff": 12.0},
 	]
 	return field
 
 
-## Flat walkable slabs standing ON the heightfield. `y` is the walking surface;
-## `thickness` should be deep enough that a raised plate sinks into whatever is
-## beneath it, with no gap.
+## Flat walkable slabs standing ON the heightfield. `y` is how far the walking
+## surface rises above the ground under `pos`; `thickness` should be deep enough
+## that a raised plate sinks into whatever is beneath it, with no gap.
+##
+## A plate is rigid, so the ground under it must be level — give every plate a
+## "flatten" pad in [method get_heightfield] covering its footprint. Without one
+## the plate stays flat while the land does not, and its edges float.
 ##
 ## The ground plane is no longer one of these — see [method get_heightfield].
 ## What belongs here now is anything architectural: a level platform, a
@@ -138,6 +207,11 @@ func get_mounds() -> Array:
 ## ground — walking, or flying, toward it simply builds more. Pushing it out is
 ## now roughly one extra ring rather than quadratically more tiles, but wants
 ## distance fog first or the edge is plainly visible.
+##
+## `skirt_depth` is the hidden apron on a LEVEL 0 tile; coarser rings double it,
+## because the crack it hides is set by vertex spacing and spacing doubles every
+## ring. verify_zone_layout.gd measures the real gaps against this land — check
+## it after changing the terrain, since a hill or a raised amplitude widens them.
 func get_terrain_manager() -> Dictionary:
 	return {"chunk_size": 32.0, "unload_margin": 48.0, "skirt_depth": 2.0,
 		"tile_resolution": 32,
@@ -156,8 +230,8 @@ func get_terrain_manager() -> Dictionary:
 ## show at a bit past the default zoom in any direction the player rotates to,
 ## so a chunk should never visibly pop in or out.
 func get_grass_manager() -> Dictionary:
-	return {"chunk_size": 20.0, "load_radius": 50.0, "unload_radius": 70.0,
-		"density": 30.0, "max_slope": 35.0, "seed": 20240}
+	return {"chunk_size": 20.0, "load_radius": 90.0, "unload_radius": 120.0,
+		"density": 45.0, "max_slope": 42.0, "seed": 20240}
 
 
 ## Footprints, in world XZ, where grass must not grow.
@@ -205,26 +279,23 @@ func get_npcs() -> Array:
 
 ## Static scenery with collision. Scattered by hand so there is something to
 ## bump into and something to judge distance against.
+##
+## `pos.y` is clearance above the land, like everything else here, so 0 means
+## "standing on the ground wherever that turns out to be". An optional `sink`
+## buries the base — see [method _ground] for when that is wanted.
 func get_props() -> Array:
 	return [
-		{"scene": TREE_SCENE, "pos": Vector3(-8, 0, 8), "yaw": 20.0, "scale": 1.0},
-		{"scene": TREE_SCENE, "pos": Vector3(-14, 0, 2), "yaw": 140.0, "scale": 1.2},
-		{"scene": TREE_SCENE, "pos": Vector3(-19, 0, -6), "yaw": 75.0, "scale": 0.9},
-		{"scene": TREE_SCENE, "pos": Vector3(2, 0, 26), "yaw": 200.0, "scale": 1.1},
-		# Directly behind the spawn point, so there is something to walk into
-		# within a second of starting.
-		{"scene": TREE_SCENE, "pos": Vector3(10, 0, 27), "yaw": 15.0, "scale": 1.0},
-		{"scene": TREE_SCENE, "pos": Vector3(22, 0, 24), "yaw": 310.0, "scale": 1.0},
-		{"scene": TREE_SCENE, "pos": Vector3(30, 0, 16), "yaw": 45.0, "scale": 1.3},
-		{"scene": TREE_SCENE, "pos": Vector3(14, 0, -18), "yaw": 90.0, "scale": 1.1},
-		{"scene": TREE_SCENE, "pos": Vector3(26, 0, -22), "yaw": 250.0, "scale": 1.0},
+		# Rocks sit half-buried anyway, and burying them a little further hides
+		# the sliver of ground a sphere leaves visible on a slope.
+		{"scene": ROCK_SCENE, "pos": Vector3(6, 0, 14), "yaw": 0.0, "scale": 1.0, "sink": 0.15},
+		{"scene": ROCK_SCENE, "pos": Vector3(-4, 0, 18), "yaw": 60.0, "scale": 1.4, "sink": 0.15},
+		{"scene": ROCK_SCENE, "pos": Vector3(20, 0, -6), "yaw": 120.0, "scale": 1.2, "sink": 0.15},
 
-		{"scene": ROCK_SCENE, "pos": Vector3(6, 0, 14), "yaw": 0.0, "scale": 1.0},
-		{"scene": ROCK_SCENE, "pos": Vector3(-4, 0, 18), "yaw": 60.0, "scale": 1.4},
-		{"scene": ROCK_SCENE, "pos": Vector3(20, 0, -6), "yaw": 120.0, "scale": 1.2},
-
-		{"scene": WALL_SCENE, "pos": Vector3(-14, 0, 24), "yaw": 0.0, "scale": 1.0},
-		{"scene": WALL_SCENE, "pos": Vector3(-35, 0, 6), "yaw": 90.0, "scale": 1.0},
+		# Six metres long, so on rolling ground one end lifts clear — see
+		# _ground()'s note on `sink`. 0.5 covers the worst this land does across
+		# that span; a wall on genuinely steep ground would need a foundation.
+		{"scene": WALL_SCENE, "pos": Vector3(-14, 0, 24), "yaw": 0.0, "scale": 1.0, "sink": 0.5},
+		{"scene": WALL_SCENE, "pos": Vector3(-35, 0, 6), "yaw": 90.0, "scale": 1.0, "sink": 0.5},
 
 		# Pines (see PineTreeProp.tscn) — the first real tree-model asset, and
 		# the proving ground for wind response on something other than grass.
@@ -245,6 +316,16 @@ func get_props() -> Array:
 		{"scene": PINE_TREE_SCENE, "pos": Vector3(15, 0, 18), "yaw": 0.0, "scale": 1.0},
 		{"scene": PINE_TREE_SCENE, "pos": Vector3(2, 0, 22), "yaw": 130.0, "scale": 1.05},
 		{"scene": PINE_TREE_SCENE, "pos": Vector3(-1, 0, 31), "yaw": 290.0, "scale": 0.95},
+
+		# EastMountain: a scattering on the lower slope, radius 35-60 from the
+		# peak at (130,22) — well clear of the radius-10 summit pad and of the
+		# steepest ground near the rim (radius 90-100).
+		{"scene": PINE_TREE_SCENE, "pos": Vector3(167.6, 0, 35.7), "yaw": 40.0, "scale": 1.1},
+		{"scene": PINE_TREE_SCENE, "pos": Vector3(125.2, 0, 76.8), "yaw": 160.0, "scale": 0.95},
+		{"scene": PINE_TREE_SCENE, "pos": Vector3(97.1, 0, 34.0), "yaw": 280.0, "scale": 1.2},
+		{"scene": PINE_TREE_SCENE, "pos": Vector3(78.0, 0, -8.0), "yaw": 320.0, "scale": 1.0},
+		{"scene": PINE_TREE_SCENE, "pos": Vector3(137.8, 0, -22.3), "yaw": 100.0, "scale": 1.05},
+		{"scene": PINE_TREE_SCENE, "pos": Vector3(173.3, 0, -3.0), "yaw": 210.0, "scale": 0.9},
 	] + _generate_forest()
 
 
@@ -385,13 +466,27 @@ func build() -> void:
 		props.add_child(_make_prop(data))
 
 
+## Resolves a layout `pos` — whose Y is clearance above the land, per this
+## file's header — into an actual world position.
+##
+## [param sink] buries the result, for anything wide enough that standing it on
+## a single ground sample leaves daylight under one end. A tree trunk is narrow
+## and needs none; a six-metre wall across a slope needs a little. The honest
+## alternative is sampling each object's whole footprint and taking the lowest
+## point, which needs every layout entry to declare a footprint it does not
+## currently have — for two walls, one number is the better trade.
+func _ground(pos: Vector3, sink := 0.0) -> Vector3:
+	var field := _ensure_heightfield()
+	return Vector3(pos.x, field.height_at(pos.x, pos.z) + pos.y - sink, pos.z)
+
+
 func _make_plate(data: Dictionary) -> GroundPlate:
 	var plate: GroundPlate = PLATE_SCRIPT.new()
 	plate.name = data.get("name", "Plate")
 	plate.size = data.get("size", Vector2(10, 10))
 	plate.thickness = data.get("thickness", 1.0)
 	plate.material = data.get("material", MAT_GRASS)
-	plate.position = data.get("pos", Vector3.ZERO)
+	plate.position = _ground(data.get("pos", Vector3.ZERO))
 	return plate
 
 
@@ -403,7 +498,7 @@ func _make_stairs(data: Dictionary) -> Stairs:
 	flight.step_depth = data.get("step_depth", 0.4)
 	flight.width = data.get("width", 4.0)
 	flight.material = data.get("material", MAT_STONE)
-	flight.position = data.get("pos", Vector3.ZERO)
+	flight.position = _ground(data.get("pos", Vector3.ZERO))
 	flight.rotation = Vector3(0.0, deg_to_rad(data.get("yaw", 0.0)), 0.0)
 	return flight
 
@@ -416,7 +511,7 @@ func _make_mound(data: Dictionary) -> TerrainMound:
 	mound.resolution = data.get("resolution", 56)
 	mound.noise_amplitude = data.get("noise_amplitude", 1.2)
 	mound.noise_seed = data.get("seed", 1337)
-	mound.position = data.get("pos", Vector3.ZERO)
+	mound.position = _ground(data.get("pos", Vector3.ZERO))
 	return mound
 
 
@@ -457,7 +552,7 @@ func _make_building(data: Dictionary) -> Building:
 	building.size = data.get("size", Vector2(16, 12))
 	building.levels = data.get("levels", 3)
 	building.level_height = data.get("level_height", 3.2)
-	building.position = data.get("pos", Vector3.ZERO)
+	building.position = _ground(data.get("pos", Vector3.ZERO))
 	building.rotation = Vector3(0.0, deg_to_rad(data.get("yaw", 0.0)), 0.0)
 	return building
 
@@ -465,7 +560,7 @@ func _make_building(data: Dictionary) -> Building:
 func _make_npc(data: Dictionary) -> Node3D:
 	var scene: PackedScene = data["scene"]
 	var npc: Node3D = scene.instantiate()
-	npc.position = data.get("pos", Vector3.ZERO)
+	npc.position = _ground(data.get("pos", Vector3.ZERO))
 	if data.has("wander_radius"):
 		npc.wander_radius = data["wander_radius"]
 	return npc
@@ -474,7 +569,7 @@ func _make_npc(data: Dictionary) -> Node3D:
 func _make_prop(data: Dictionary) -> Node3D:
 	var scene: PackedScene = data["scene"]
 	var node: Node3D = scene.instantiate()
-	node.position = data.get("pos", Vector3.ZERO)
+	node.position = _ground(data.get("pos", Vector3.ZERO), data.get("sink", 0.0))
 	node.rotation = Vector3(0.0, deg_to_rad(data.get("yaw", 0.0)), 0.0)
 	var s: float = data.get("scale", 1.0)
 	node.scale = Vector3(s, s, s)

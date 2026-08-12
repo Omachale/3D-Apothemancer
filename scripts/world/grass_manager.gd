@@ -129,7 +129,14 @@ var _active: Dictionary = {}
 ## is neither re-queued nor freed, so a build never has the ground pulled out
 ## from under its own in-flight await.
 var _pending: Dictionary = {}
-## Array of Vector2i, FIFO.
+## Array of {"cell": Vector2i, "distance": float}, kept sorted nearest-first —
+## same reason and same shape as terrain_manager.gd's _build_queue. A plain
+## FIFO queues cells in raster-scan order, which has nothing to do with which
+## one the player is standing on: when a large batch queues at once (zone
+## load, or a run that crosses several chunks between rescans), the chunk
+## directly underfoot can land anywhere in that sweep, and everything scanned
+## earlier — regardless of distance — builds first. That is what a "grass
+## exists nearby but not right where I'm standing" report actually is.
 var _build_queue: Array = []
 var _building := 0
 var _timer := 0.0
@@ -155,11 +162,15 @@ func _process(delta: float) -> void:
 func _rescan() -> void:
 	if Game.player == null:
 		return
-	# Streamed from the CAMERA, matching terrain_manager.gd — see the note in
-	# its _rescan for why. Grass is a smaller version of the same problem: at
-	# altitude the ground under the player's feet is not what is filling the
-	# screen, so chunks need to load around what the camera can see, not around
-	# where the player happens to be standing.
+	# The RIG's pivot, not the real Camera3D — deliberately NOT what
+	# terrain_manager.gd reads for its own screen-space test. That pivot is the
+	# point being looked AT (see camera_rig.gd), which follows the player with
+	# only a small vertical offset, so it stays right where grass most needs to
+	# exist: under the player's own feet. The real camera eye sits well back
+	# and up from there (camera_rig's `distance`, currently ~20 units) — using
+	# it here would pull the load disc's centre away from the player toward the
+	# direction the rig is facing, which is the opposite of what a "why is
+	# there no grass right where I'm standing" report wants fixed.
 	var cam := Game.camera_rig.global_position if Game.camera_rig else Game.player.global_position
 	if absf(cam.x) > map_half_extent or absf(cam.z) > map_half_extent:
 		return
@@ -172,6 +183,11 @@ func _rescan() -> void:
 
 	_queue_new_chunks(view_xz, half_diag, radii[0])
 	_free_out_of_range_chunks(view_xz, half_diag, radii[1])
+	# Re-sorted every scan, not just appended-then-left, because the player
+	# moving changes which queued cell is actually nearest — see the note on
+	# _build_queue.
+	_build_queue.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return a["distance"] < b["distance"])
 
 
 ## The load/unload radii actually in use right now: [member load_radius] and
@@ -203,10 +219,11 @@ func _queue_new_chunks(view_xz: Vector2, half_diag: float, radius: float) -> voi
 			var cell := Vector2i(cx, cz)
 			if _active.has(cell) or _pending.has(cell):
 				continue
-			if p.distance_to(_cell_center(cell)) - half_diag > radius:
+			var dist := p.distance_to(_cell_center(cell))
+			if dist - half_diag > radius:
 				continue
 			_pending[cell] = true
-			_build_queue.append(cell)
+			_build_queue.append({"cell": cell, "distance": dist})
 
 
 func _free_out_of_range_chunks(view_xz: Vector2, half_diag: float, radius: float) -> void:
@@ -236,7 +253,8 @@ func _free_out_of_range_chunks(view_xz: Vector2, half_diag: float, radius: float
 
 func _drain_build_queue() -> void:
 	while _building < max_concurrent_builds and not _build_queue.is_empty():
-		var cell: Vector2i = _build_queue.pop_front()
+		var task: Dictionary = _build_queue.pop_front()
+		var cell: Vector2i = task["cell"]
 		# The chunk may have been freed between being queued and being reached.
 		if not _pending.has(cell):
 			continue
