@@ -79,6 +79,19 @@ extends Resource
 ## one means watching the other — see the slope note at the top.
 @export_range(0.0005, 0.2, 0.0005) var rolling_frequency := 0.008: set = _set_rolling_frequency
 
+@export_group("Mountains")
+## Large-scale procedural hills and valleys, summed on top of rolling. The
+## wavelength is set by [member mountains_frequency]; with the default (0.002)
+## peaks are ~500m apart, suitable for terrain features you'd walk between for
+## a few minutes. Left at 0 amplitude, mountains are disabled and the world is
+## just rolling undulation.
+@export_range(0.0, 40.0, 0.5) var mountains_amplitude := 0.0: set = _set_mountains_amplitude
+@export_range(0.0002, 0.04, 0.0002) var mountains_frequency := 0.002: set = _set_mountains_frequency
+## Center of the protected zone where mountains fade out (the starting area).
+## Peaks within this radius are suppressed so the player spawns on level ground.
+@export var mountains_protected_center := Vector2(10.0, 22.0): set = _set_mountains_protected_center
+@export_range(0.0, 200.0, 5.0) var mountains_protected_radius := 80.0: set = _set_mountains_protected_radius
+
 @export_group("Features")
 ## Hills, plateaus, basins and levelling pads, each a Dictionary, applied onto
 ## the base surface. Kept as plain data (rather than as child nodes or hardcoded
@@ -115,6 +128,7 @@ extends Resource
 @export var seed := 20240: set = _set_seed
 
 var _rolling := FastNoiseLite.new()
+var _mountains := FastNoiseLite.new()
 var _detail := FastNoiseLite.new()
 ## [member features] split into the two passes, and pads with their `level`
 ## already resolved. Rebuilt by [method _rebuild] whenever anything the surface
@@ -150,6 +164,14 @@ func _shaped_height_at(x: float, z: float) -> float:
 	var h := base_elevation
 	if rolling_amplitude > 0.0:
 		h += _rolling.get_noise_2d(x, z) * rolling_amplitude
+	if mountains_amplitude > 0.0:
+		var dx := x - mountains_protected_center.x
+		var dz := z - mountains_protected_center.y
+		var dist := sqrt(dx * dx + dz * dz)
+		# Fade out mountains toward zero at the protected center, full strength
+		# beyond the protected radius. Smooth falloff over 100 units past the edge.
+		var falloff := smoothstep(-50.0, 100.0, dist - mountains_protected_radius)
+		h += _mountains.get_noise_2d(x, z) * mountains_amplitude * falloff
 	for shape in _shapes:
 		h += _feature_height(shape, x, z)
 	return h
@@ -359,6 +381,12 @@ func _rebuild() -> void:
 	_rolling.frequency = rolling_frequency
 	_rolling.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	_rolling.fractal_octaves = 3
+	# Mountains are a separate layer with lower frequency (broader features) and
+	# its own seed offset so they don't follow the rolling pattern.
+	_mountains.seed = seed ^ 0xbeef
+	_mountains.frequency = mountains_frequency
+	_mountains.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	_mountains.fractal_octaves = 3
 	# Offset seed, so feature detail is not a scaled copy of the same pattern
 	# the whole world already undulates by.
 	_detail.seed = seed ^ 0x51ed
@@ -438,6 +466,30 @@ func _set_rolling_amplitude(value: float) -> void:
 
 func _set_rolling_frequency(value: float) -> void:
 	rolling_frequency = maxf(value, 0.0001)
+	_dirty = true
+	emit_changed()
+
+
+func _set_mountains_amplitude(value: float) -> void:
+	mountains_amplitude = maxf(value, 0.0)
+	_dirty = true
+	emit_changed()
+
+
+func _set_mountains_frequency(value: float) -> void:
+	mountains_frequency = maxf(value, 0.0001)
+	_dirty = true
+	emit_changed()
+
+
+func _set_mountains_protected_center(value: Vector2) -> void:
+	mountains_protected_center = value
+	_dirty = true
+	emit_changed()
+
+
+func _set_mountains_protected_radius(value: float) -> void:
+	mountains_protected_radius = maxf(value, 0.0)
 	_dirty = true
 	emit_changed()
 

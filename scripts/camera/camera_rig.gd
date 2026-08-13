@@ -6,10 +6,26 @@
 ## straight back along the rig's local +Z, so the whole framing is controlled by
 ## three numbers: [member yaw], [member pitch] and [member distance].
 ##
-## Pitch is fixed at the game's framing by default. F12 unlocks it for
-## middle-mouse dragging and F12 again re-locks it, snapping back to the
-## startup value — so experimenting with the angle can always be undone with
-## one key rather than by nudging it back by eye.
+## Middle-mouse drag always controls the camera: vertical drag tilts pitch,
+## horizontal drag orbits yaw (the same rotation Q/E drive from the keyboard —
+## both paths write the same [member yaw]). There is no lock/unlock step.
+##
+## GROUND COLLISION. After the rig follows its target each frame, the actual
+## Camera3D world position is checked against [member Game.heightfield] and
+## pushed up if it would sit inside or under the ground — see
+## [method _clamp_camera_above_ground]. This is a height check, not a raycast:
+## cheap, and correct for the common case (camera dips into a hillside behind
+## the player) at the cost of not knowing about anything that isn't part of the
+## heightfield surface (buildings, the tower). Good enough until that gap
+## actually shows up in play.
+##
+## The clamp writes the camera's LOCAL transform (it is a child of this rig),
+## so every frame first resets that local offset to its canonical value via
+## [method _apply_camera_transform] before checking ground. Skipping that
+## reset was a real bug: a clamp would bake in a permanent local offset that
+## never relaxed once the ground no longer required it, so the camera stayed
+## stuck up in the air behind the player long after it had walked clear of
+## the slope that caused it.
 ##
 ## Framing note: a narrow FOV pushed further back reads as "isometric" while
 ## keeping a little perspective depth. At the defaults below the mage (~2.6
@@ -23,7 +39,7 @@
 ## diagonal look for that first frame until the player rotates or moves.
 @export_range(-180.0, 180.0, 1.0) var yaw := 0.0: set = set_yaw
 ## Downward tilt. -90 would be straight down; -50 keeps some sense of height.
-@export_range(-89.0, -5.0, 1.0) var pitch := -45.0: set = set_pitch
+@export_range(-89.0, -5.0, 1.0) var pitch := -20.0: set = set_pitch
 ## How far the camera sits back along the view ray.
 @export_range(4.0, 60.0, 0.5) var distance := 20.0: set = set_distance
 @export_range(10.0, 90.0, 1.0) var fov := 45.0: set = set_fov
@@ -47,14 +63,22 @@
 @export var allow_rotation := true
 @export_range(0.0, 360.0, 5.0) var rotation_speed := 90.0
 
-@export_group("Pitch control")
-## Degrees of tilt per pixel of middle-mouse drag, once F12 has unlocked pitch.
+@export_group("Drag control")
+## Degrees of tilt per pixel of vertical middle-mouse drag.
 @export_range(0.02, 1.0, 0.01) var pitch_drag_speed := 0.25
-## Which way a drag tilts. The default is the orbit convention: drag UP and the
-## camera rises, giving a more top-down view. Exported because this is pure
-## preference and the opposite convention is just as common — one checkbox
+## Which way a vertical drag tilts. The default is the orbit convention: drag UP
+## and the camera rises, giving a more top-down view. Exported because this is
+## pure preference and the opposite convention is just as common — one checkbox
 ## beats asking anyone to edit code over it.
 @export var invert_pitch_drag := false
+## Degrees of orbit per pixel of horizontal middle-mouse drag. Drives the same
+## [member yaw] that Q/E do, so the two controls never fight over direction.
+@export_range(0.02, 1.0, 0.01) var yaw_drag_speed := 0.25
+
+@export_group("Ground collision")
+## How far above the heightfield surface the camera is kept. A height check
+## against [member Game.heightfield], not a raycast — see the class doc.
+@export_range(0.0, 5.0, 0.1) var ground_clearance := 0.4
 
 @export_group("Inspect mode")
 ## F1 swings the camera in close at near eye level. The gameplay framing is
@@ -80,21 +104,11 @@ var target: Node3D = null
 ## 0 = gameplay framing, 1 = inspect framing.
 var _inspect := 0.0
 var _inspect_on := false
-## Whether middle-drag may tilt the camera. Off by default: the fixed pitch is
-## the game's look, and a camera that drifts off it by accident is worse than
-## one that cannot move at all.
-var _pitch_unlocked := false
-## The framing to restore when pitch is locked again. Captured once at startup
-## rather than read from the export at restore time, because dragging writes
-## straight to `pitch` — by the time the player toggles off, the export no
-## longer remembers what it started as.
-var _default_pitch := -45.0
 
 @onready var _camera: Camera3D = $Camera3D
 
 
 func _ready() -> void:
-	_default_pitch = pitch
 	_apply_rig_rotation()
 	_apply_camera_transform()
 	Game.register_camera(self)
@@ -114,15 +128,6 @@ func _process(delta: float) -> void:
 
 	if Input.is_action_just_pressed("camera_inspect"):
 		_inspect_on = not _inspect_on
-
-	if Input.is_action_just_pressed("camera_pitch_toggle"):
-		_pitch_unlocked = not _pitch_unlocked
-		# Locking SNAPS back to the default rather than easing there. An eased
-		# return would be prettier, but it would also fight the inspect blend
-		# for ownership of the same value; snapping is unambiguous, and F12 is
-		# a deliberate press rather than something brushed by accident.
-		if not _pitch_unlocked:
-			set_pitch(_default_pitch)
 
 	# Only zooms the gameplay framing — inspect mode has its own fixed
 	# distance for judging poses up close, and scrolling shouldn't disturb it.
@@ -151,8 +156,18 @@ func _process(delta: float) -> void:
 	pos.y = lerp(pos.y, goal.y, v_weight)
 	global_position = pos
 
+	# Restore the camera's canonical local offset before checking ground. The
+	# clamp below writes _camera.global_position directly, and because the
+	# camera is a CHILD of this rig, that write lands on its local transform —
+	# it does not get overwritten by the rig moving. Without this reset, one
+	# clamp leaves a permanent local offset baked in, and the camera never
+	# comes back down once terrain no longer requires the push.
+	_apply_camera_transform()
+	_clamp_camera_above_ground()
 
-## Middle-drag tilts the camera while pitch is unlocked.
+
+## Middle-drag always tilts and orbits the camera: vertical motion is pitch,
+## horizontal motion is yaw (the same rotation Q/E drive).
 ##
 ## Handled here as an event rather than polled in _process because only the
 ## event carries `relative` — the per-frame mouse DELTA. Polling would give the
@@ -160,7 +175,7 @@ func _process(delta: float) -> void:
 ## remembering last frame's, and that reconstruction breaks the moment the
 ## window loses and regains focus.
 func _unhandled_input(event: InputEvent) -> void:
-	if not _pitch_unlocked or not (event is InputEventMouseMotion):
+	if not (event is InputEventMouseMotion):
 		return
 	if not Input.is_action_pressed("camera_pitch_drag"):
 		return
@@ -169,13 +184,32 @@ func _unhandled_input(event: InputEvent) -> void:
 	# inspect. Refusing outright is clearer than a silent partial effect.
 	if _inspect_on:
 		return
-	var amount: float = event.relative.y * pitch_drag_speed
-	set_pitch(pitch + (-amount if invert_pitch_drag else amount))
+	var pitch_amount: float = event.relative.y * pitch_drag_speed
+	set_pitch(pitch + (-pitch_amount if invert_pitch_drag else pitch_amount))
+	# Drag right orbits the same direction "E" (camera_rotate_right) does.
+	set_yaw(yaw - event.relative.x * yaw_drag_speed)
 
 
-## True while middle-drag may tilt the camera.
-func is_pitch_unlocked() -> bool:
-	return _pitch_unlocked
+## Pushes the actual Camera3D up in WORLD space if the heightfield says it
+## would otherwise sit inside or under the ground. Set directly on the camera
+## rather than on this rig, so pitch and distance stay exactly what the player
+## chose — only the one axis that would clip is touched, and only by as much
+## as it has to be.
+##
+## A height check, not a raycast: cheap and right for the common case (camera
+## dipping into a hillside behind the player), blind to anything that isn't
+## part of the heightfield surface (buildings, the tower). See the class doc.
+func _clamp_camera_above_ground() -> void:
+	if _camera == null:
+		return
+	var field: Heightfield = Game.heightfield
+	if field == null:
+		return
+	var cam_pos := _camera.global_position
+	var min_y := field.height_at(cam_pos.x, cam_pos.z) + ground_clearance
+	if cam_pos.y < min_y:
+		cam_pos.y = min_y
+		_camera.global_position = cam_pos
 
 
 ## Jump straight to the target with no smoothing. Call after teleporting the

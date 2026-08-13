@@ -2,10 +2,7 @@ extends Node
 
 ## Autoload. Inert unless asked for.
 ##
-## F12 in-game toggles free camera pitch — see camera_rig.gd; this autoload
-## no longer binds it.
-##
-## It also supports driving the game from the command line, so a change can be
+## It supports driving the game from the command line, so a change can be
 ## verified without sitting at the keyboard:
 ##
 ##     godot --path <project> -- --shot=out.png --shot-frames=120

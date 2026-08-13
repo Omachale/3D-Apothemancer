@@ -28,6 +28,7 @@ extends Node3D
 const PLATE_SCRIPT := preload("res://scripts/terrain/ground_plate.gd")
 const STAIRS_SCRIPT := preload("res://scripts/terrain/stairs.gd")
 const BUILDING_SCRIPT := preload("res://scripts/terrain/building.gd")
+const TOWER_SCRIPT := preload("res://scripts/terrain/tower.gd")
 const MOUND_SCRIPT := preload("res://scripts/terrain/terrain_mound.gd")
 const GRASS_MANAGER_SCRIPT := preload("res://scripts/world/grass_manager.gd")
 const TERRAIN_MANAGER_SCRIPT := preload("res://scripts/world/terrain_manager.gd")
@@ -78,9 +79,9 @@ var _heightfield: Heightfield = null
 ## float at one corner and sink at the other. A "flatten" feature levels the
 ## ground beneath each one and eases back to the land around it — see
 ## [Heightfield]'s note on the two passes. The rule when adding a structure is
-## that its footprint goes in [method get_buildings] or [method get_plates] AND
-## a pad covering it goes here, a little larger than the footprint so the blend
-## starts clear of the walls.
+## that its footprint goes in [method get_buildings], [method get_towers] or
+## [method get_plates] AND a pad covering it goes here, a little larger than
+## the footprint so the blend starts clear of the walls.
 ##
 ## The terrace pad deliberately covers its staircase too. Stairs rise by a fixed
 ## amount to meet the plate above, so the ground they start from and the ground
@@ -92,6 +93,10 @@ func get_heightfield() -> Heightfield:
 	field.base_elevation = 0.0
 	field.rolling_amplitude = 3.0
 	field.rolling_frequency = 0.008
+	field.mountains_amplitude = 45.0
+	field.mountains_frequency = 0.002
+	field.mountains_protected_center = Vector2(10.0, 22.0)
+	field.mountains_protected_radius = 80.0
 	field.features = [
 		# Was the "SouthHill" TerrainMound. Same centre, radius and height, so
 		# the same hill stands in the same place — it is simply described now
@@ -125,7 +130,9 @@ func get_heightfield() -> Heightfield:
 		# same level, plus a unit of margin on x.
 		{"type": "flatten", "pos": Vector2(-25, 21),
 			"size": Vector2(22, 26), "falloff": 10.0},
-		# EastMountain summit: a level 20x20 platform for a future tower. The
+		# EastMountain summit: a level 20x20 platform for EastMountainTower
+		# (see get_towers) — comfortably larger than the tower's own derived
+		# 8.4x8.4 footprint. The
 		# hill feature above is a PLATEAU, not a hill: its flat_ratio already
 		# holds the top exactly level out to radius 15, comfortably past the
 		# pad's own half-extent (10, ~14.1 at the rounded corners) — so this pad
@@ -221,6 +228,27 @@ func get_terrain_manager() -> Dictionary:
 		"horizon_distance": 480.0}
 
 
+## Distance haze, and the view ranges derived from it — see atmosphere.gd for
+## why the fog end, the camera far plane and the shadow range have to be solved
+## together rather than authored separately.
+##
+## The two fog distances are FRACTIONS of `horizon_distance` above, not metres,
+## so pushing the horizon out moves the haze with it and the world edge stays
+## hidden without retuning anything here. `fog_opacity` is the dial to reach
+## for first if the look is wrong: 1.0 is total haze at the far end, lower
+## leaves the horizon translucent.
+##
+## `shadow_distance` is the one number that is NOT derived. It is a fixed texel
+## budget spread over a distance, so stretching it to the horizon just blurs
+## every shadow near the player to buy shadows the fog already hides.
+func get_atmosphere() -> Dictionary:
+	return {"fog_begin_fraction": 0.35, "fog_end_fraction": 0.95,
+		"fog_curve": 1.6, "fog_opacity": 1.0,
+		"fog_color": Color(0.65098, 0.72549, 0.792157),
+		"fog_sun_scatter": 0.1, "fog_sky_affect": 0.0,
+		"far_margin": 1.05, "shadow_distance": 55.0}
+
+
 ## Wall-to-wall grass, streamed in square chunks around the player rather
 ## than a fixed set of hand-placed patches — see grass_manager.gd. Blades now
 ## find the ground by asking the heightfield instead of raycasting, which is
@@ -250,7 +278,21 @@ func get_grass_exclusions() -> Array:
 		# Terrace: centred (-25, 20), 20 x 20. Grass under a solid plate is
 		# invisible and still costs a blade, so it is simply not planted.
 		Rect2(-35.0, 10.0, 20.0, 20.0),
+		# EastMountainTower: centred (130, 22). Tower's footprint is derived
+		# from its stair geometry rather than authored (see tower.gd), so it
+		# is asked directly rather than duplicated here as a literal.
+		_tower_exclusion_rect(Vector2(130, 22)),
 	]
+
+
+## Builds a throwaway Tower just to ask its derived footprint — see
+## get_grass_exclusions' note on why this isn't a hardcoded literal like the
+## other entries.
+func _tower_exclusion_rect(centre: Vector2) -> Rect2:
+	var tower: Tower = TOWER_SCRIPT.new()
+	var s := tower.suggest_size()
+	tower.free()
+	return Rect2(centre.x - s * 0.5, centre.y - s * 0.5, s, s)
 
 
 ## Multi-storey buildings. Each is generated from its own numbers by
@@ -262,6 +304,22 @@ func get_buildings() -> Array:
 		# looks toward -X/-Z, so a door on the -Z face would never be seen.
 		{"name": "StoneKeep", "pos": Vector3(-26, 0, -14), "yaw": 180.0,
 			"size": Vector2(16, 12), "levels": 3, "level_height": 3.2},
+	]
+
+
+## Tall, narrow towers with a spiral interior stair — see tower.gd. pos is
+## the ground the base slab sits on; yaw turns it (the door is on the -Z
+## side before rotation, same convention as get_buildings).
+func get_towers() -> Array:
+	return [
+		# EastMountain summit tower: sits on the "future tower" pad (see
+		# get_heightfield's summit flatten) and inside _generate_mountain_trees'
+		# clear_radius. yaw 90 puts the door on the WEST face — verified with a
+		# headless probe of Basis(UP, yaw) against the compass convention in
+		# compass.gd — approached from the mountain's western shoulder, which
+		# is also where the treeline and the climbable slope both are.
+		{"name": "EastMountainTower", "pos": Vector3(130, 0, 22), "yaw": 90.0,
+			"height": 30.0},
 	]
 
 
@@ -317,16 +375,63 @@ func get_props() -> Array:
 		{"scene": PINE_TREE_SCENE, "pos": Vector3(2, 0, 22), "yaw": 130.0, "scale": 1.05},
 		{"scene": PINE_TREE_SCENE, "pos": Vector3(-1, 0, 31), "yaw": 290.0, "scale": 0.95},
 
-		# EastMountain: a scattering on the lower slope, radius 35-60 from the
-		# peak at (130,22) — well clear of the radius-10 summit pad and of the
-		# steepest ground near the rim (radius 90-100).
-		{"scene": PINE_TREE_SCENE, "pos": Vector3(167.6, 0, 35.7), "yaw": 40.0, "scale": 1.1},
-		{"scene": PINE_TREE_SCENE, "pos": Vector3(125.2, 0, 76.8), "yaw": 160.0, "scale": 0.95},
-		{"scene": PINE_TREE_SCENE, "pos": Vector3(97.1, 0, 34.0), "yaw": 280.0, "scale": 1.2},
-		{"scene": PINE_TREE_SCENE, "pos": Vector3(78.0, 0, -8.0), "yaw": 320.0, "scale": 1.0},
-		{"scene": PINE_TREE_SCENE, "pos": Vector3(137.8, 0, -22.3), "yaw": 100.0, "scale": 1.05},
-		{"scene": PINE_TREE_SCENE, "pos": Vector3(173.3, 0, -3.0), "yaw": 210.0, "scale": 0.9},
-	] + _generate_forest()
+	] + _generate_mountain_trees() + _generate_forest()
+
+
+## EastMountain's tree cover: a mix of tight clumps and a sparse scatter
+## between them, so the slope reads as a real treeline rather than a grid or a
+## uniform sprinkle. Confined to an annulus around the peak at (130, 22) —
+## inside [param clear_radius] is left bare for the tower this pad
+## (get_heightfield()'s summit "flatten" feature) exists for, and outside
+## [param outer_radius] stays clear of the steepest ground near the rim.
+##
+## Deterministic: seeded RNG only, same rule as [method _generate_forest].
+func _generate_mountain_trees() -> Array:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20240 + 900
+
+	var center := Vector2(130.0, 22.0)
+	var clear_radius := 26.0
+	var outer_radius := 92.0
+	var target_count := 100
+
+	var trees: Array = []
+
+	# Clumps first: a handful of tight stands scattered around the slope.
+	# Placed before the sparse fill so the fill can simply top up whatever
+	# count the clumps didn't reach, rather than the two fighting over a
+	# shared budget.
+	var clump_count := 9
+	for _c in clump_count:
+		var clump_r := rng.randf_range(clear_radius, outer_radius - 8.0)
+		var clump_angle := rng.randf() * TAU
+		var clump_center := center + Vector2(cos(clump_angle), sin(clump_angle)) * clump_r
+		var clump_size := rng.randi_range(6, 13)
+		for _i in clump_size:
+			var jitter := Vector2(rng.randf_range(-4.0, 4.0), rng.randf_range(-4.0, 4.0))
+			var pos := clump_center + jitter
+			# A clump anchored just outside clear_radius can still jitter a
+			# tree or two across it; drop those rather than let the tower's
+			# clearing grow a tree.
+			if pos.distance_to(center) < clear_radius:
+				continue
+			trees.append({
+				"scene": PINE_TREE_SCENE, "pos": Vector3(pos.x, 0.0, pos.y),
+				"yaw": rng.randf_range(0.0, 360.0), "scale": rng.randf_range(0.85, 1.25),
+			})
+
+	# Sparse fill: uniform across the whole annulus, closing the gaps between
+	# clumps so the slope between stands doesn't read as bare.
+	while trees.size() < target_count:
+		var angle := rng.randf() * TAU
+		var r := rng.randf_range(clear_radius, outer_radius)
+		var pos := center + Vector2(cos(angle), sin(angle)) * r
+		trees.append({
+			"scene": PINE_TREE_SCENE, "pos": Vector3(pos.x, 0.0, pos.y),
+			"yaw": rng.randf_range(0.0, 360.0), "scale": rng.randf_range(0.8, 1.3),
+		})
+
+	return trees
 
 
 ## A dense pine forest, well clear of spawn — see [method get_props] for the
@@ -450,6 +555,8 @@ func build() -> void:
 		terrain.add_child(_make_mound(data))
 	for data in get_buildings():
 		terrain.add_child(_make_building(data))
+	for data in get_towers():
+		terrain.add_child(_make_tower(data))
 
 	var flora := Node3D.new()
 	flora.name = "Grass"
@@ -555,6 +662,17 @@ func _make_building(data: Dictionary) -> Building:
 	building.position = _ground(data.get("pos", Vector3.ZERO))
 	building.rotation = Vector3(0.0, deg_to_rad(data.get("yaw", 0.0)), 0.0)
 	return building
+
+
+func _make_tower(data: Dictionary) -> Tower:
+	var tower: Tower = TOWER_SCRIPT.new()
+	tower.name = data.get("name", "Tower")
+	tower.height = data.get("height", 30.0)
+	if data.has("size"):
+		tower.size = data["size"]
+	tower.position = _ground(data.get("pos", Vector3.ZERO))
+	tower.rotation = Vector3(0.0, deg_to_rad(data.get("yaw", 0.0)), 0.0)
+	return tower
 
 
 func _make_npc(data: Dictionary) -> Node3D:

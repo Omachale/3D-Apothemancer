@@ -120,6 +120,10 @@ const GRASS_SCRIPT := preload("res://scripts/terrain/grass_field.gd")
 @export var blade_droop := 0.16
 @export var height_variation := 0.4
 @export var max_slope_degrees := 30.0
+## Passed straight through to each chunk — see GrassField.reduced_density_band_degrees.
+@export var reduced_density_band_degrees := 15.0
+## Passed straight through to each chunk — see GrassField.density_region_size.
+@export var density_region_size := 12.0
 @export var seed := 20240
 @export var material: Material = null
 
@@ -274,6 +278,13 @@ func _spawn(cell: Vector2i) -> void:
 	field.blade_droop = blade_droop
 	field.height_variation = height_variation
 	field.max_slope_degrees = max_slope_degrees
+	field.reduced_density_band_degrees = reduced_density_band_degrees
+	field.density_region_size = density_region_size
+	# NOT per-cell like `seed` below: a density-tier region (see
+	# GrassField._density_factor) can straddle two chunks, and both halves
+	# must hash to the same tier or the seam between them shows as a hard
+	# density edge exactly where none is meant to exist.
+	field.density_seed = seed
 	field.seed = seed ^ (cell.x * 92821) ^ (cell.y * 68917)
 	field.name = "Chunk_%d_%d" % [cell.x, cell.y]
 	field.material = material

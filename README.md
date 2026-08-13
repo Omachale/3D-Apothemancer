@@ -366,6 +366,46 @@ is the first thing to run against any new character model:
 godot --headless --path . --script res://scripts/dev/dump_bones.gd
 ```
 
+## Running the verification suites
+
+Always go through the runner rather than invoking Godot directly:
+
+```bash
+pwsh -File scripts/dev/run_verify.ps1
+```
+
+Single suites, and the switch to use after adding a `class_name`:
+
+```bash
+pwsh -File scripts/dev/run_verify.ps1 -Suites tower,zone_layout -RescanClasses
+```
+
+**Why not call Godot directly.** Every `verify_*.gd` exits through a single
+`quit()` as the last statement of `_ready()`/`_init()`. There is no watchdog.
+A GDScript error is fatal to the *script* but not to the *process*: on a parse
+error `_ready()` never runs, so `quit()` is unreachable, and headless Godot —
+no window, no input, no work queue — idles forever. It does not crash, time
+out, or exit non-zero. One such run sat there for over twenty minutes because
+of a single un-inferable `:=`.
+
+The runner closes the three ways that trap gets sprung:
+
+- **Parse-checks first** (`--check-only`), so a bad script fails in under a
+  second with a line number instead of hanging. Note `--check-only` implies
+  `--script`, which does *not* set up autoloads, so `Compile Error: Identifier
+  not found: Game` (and its cascade) is expected noise and is ignored;
+  `Parse Error` never is.
+- **`-RescanClasses`** forces the editor filesystem scan that writes
+  `.godot/global_script_class_cache.cfg`. A new `class_name` is invisible to
+  headless runs until that happens, so the first run after adding one is
+  otherwise *guaranteed* to parse-error and therefore hang.
+- **Two backstops** — `--quit-after` bounds the process from inside, and a
+  wall-clock `WaitForExit` kills it from outside.
+
+Because `--quit-after` force-quits with exit code 0, a hung suite would look
+like a silent pass on exit code alone. A suite counts as passing only if it
+exits 0 **and** prints its own success marker.
+
 ## Verified
 
 Measured via the harness above, not eyeballed:

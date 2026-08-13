@@ -44,6 +44,29 @@ signal built
 ## Ground steeper than this gets no grass, which keeps it off stair ramps and
 ## the steepest flanks of hills.
 @export_range(0.0, 89.0, 1.0) var max_slope_degrees := 30.0
+## Beyond [member max_slope_degrees], ground does not go straight to bare —
+## it steps down to one of three reduced densities (80%, 60%, 40%) over this
+## many further degrees, THEN goes bare. Slopes this project actually has
+## (a hillside, a pad's shoulder, the mountain's flank) are not the sheer
+## drops a hard cutoff was written for; a band of thinning grass reads as
+## ground that is merely steep, where a hard edge read as a mistake. 0
+## restores the old hard cutoff exactly.
+@export_range(0.0, 60.0, 1.0) var reduced_density_band_degrees := 15.0
+## World size of one density-tier patch within the reduced band — see
+## [member reduced_density_band_degrees]. Coarser than the height/slope grid
+## on purpose: the tier is chosen per PATCH so a hillside reads as a few
+## distinct, plausible thinning bands, not a speckle that changes at every
+## grid point.
+@export_range(1.0, 40.0, 1.0) var density_region_size := 12.0
+## Seed for the density-tier hash — see [member density_region_size].
+## Deliberately separate from [member seed] (which grass_manager.gd varies
+## per chunk so neighbouring patches don't repeat the same scatter): a
+## density-tier region can straddle two chunks, and if the hash used the
+## per-chunk seed the two halves would disagree on the tier, showing a hard
+## density edge exactly on the chunk boundary. This one is the SAME across
+## every chunk in a field, so the tier a region gets does not depend on which
+## chunk happens to be sampling it.
+@export var density_seed := 20240
 ## Fraction of the radius over which density falls away to nothing at the rim.
 ## Without this a patch ends on a hard circular line that reads as a bald spot
 ## in the world rather than as a meadow.
@@ -287,7 +310,7 @@ func _find_placements(count: int) -> PackedVector3Array:
 
 		var spot: Variant = null
 		if heightfield != null:
-			spot = _sample_from_grid(grid, origin, half, x, z, min_up)
+			spot = _sample_from_grid(grid, origin, half, x, z, rng)
 		else:
 			var query := PhysicsRayQueryParameters3D.create(
 				Vector3(x, origin.y + 60.0, z),
@@ -317,35 +340,68 @@ func _find_placements(count: int) -> PackedVector3Array:
 ##
 ## Returns a Dictionary rather than a class purely to keep this file free of
 ## an extra type: `res` (grid points per axis), `step` (world units between
-## them), `h` (heights, row-major) and `up` (slope cosines, same layout and
-## order).
+## them), `h` (heights, row-major), `up` (slope cosines, same layout) and
+## `density` (keep-probability per point, 1.0 on walkable ground, tiered down
+## through the reduced band, 0.0 past it — see [method _density_factor]).
 func _sample_grid(origin: Vector3, half: float) -> Dictionary:
 	var spacing := maxf(height_sample_spacing, 0.05)
 	var res := maxi(2, int(ceil(2.0 * half / spacing)) + 1)
 	var step := (2.0 * half) / float(res - 1)
 	var h := PackedFloat32Array()
 	var up := PackedFloat32Array()
+	var density := PackedFloat32Array()
 	h.resize(res * res)
 	up.resize(res * res)
+	density.resize(res * res)
 	for gz in res:
 		var wz := origin.z - half + float(gz) * step
 		for gx in res:
 			var wx := origin.x - half + float(gx) * step
 			var height := heightfield.height_at(wx, wz)
 			var idx := gz * res + gx
+			var u := heightfield.slope_cosine_at(wx, wz, height)
 			h[idx] = height
-			up[idx] = heightfield.slope_cosine_at(wx, wz, height)
-	return {"res": res, "step": step, "h": h, "up": up}
+			up[idx] = u
+			density[idx] = _density_factor(wx, wz, u)
+	return {"res": res, "step": step, "h": h, "up": up, "density": density}
+
+
+## Keep-probability at one world point, given its slope cosine [param up]
+## (from [method Heightfield.slope_cosine_at]): 1.0 within
+## [member max_slope_degrees], one of {0.8, 0.6, 0.4} across
+## [member reduced_density_band_degrees] beyond it, then 0.0.
+##
+## The tier is chosen by hashing a [member density_region_size] world-space
+## cell, not the point itself, so a whole patch of hillside commits to one
+## tier instead of flickering between three at grid resolution — a real slope
+## reads as having a few plausible thinning bands, not static.
+func _density_factor(x: float, z: float, up: float) -> float:
+	var min_up := cos(deg_to_rad(max_slope_degrees))
+	if up >= min_up:
+		return 1.0
+	if reduced_density_band_degrees <= 0.0:
+		return 0.0
+	var hard_min_up := cos(deg_to_rad(max_slope_degrees + reduced_density_band_degrees))
+	if up < hard_min_up:
+		return 0.0
+	var rx := int(floor(x / density_region_size))
+	var rz := int(floor(z / density_region_size))
+	var h := (rx * 92821) ^ (rz * 68917) ^ density_seed
+	match absi(h) % 3:
+		0: return 0.8
+		1: return 0.6
+		_: return 0.4
 
 
 ## One candidate's ground spot, read from the grid [method _sample_grid]
-## built: height bilinearly interpolated for a smooth surface, slope taken
-## from the nearest grid point since it is only ever compared against a
-## threshold — no visible loss at grid points a metre apart, and one lookup
-## instead of four plus a lerp. Returns null where the ground there is too
-## steep to plant on, matching the direct-sampling path this replaces.
+## built: height bilinearly interpolated for a smooth surface, density taken
+## from the nearest grid point (see [method _density_factor]) since it only
+## ever feeds a keep/reject roll — no visible loss at grid points a metre
+## apart, and one lookup instead of four plus a lerp. Returns null where the
+## roll rejects the spot, whether from a hard cutoff (density 0) or from
+## losing the reduced-density roll.
 func _sample_from_grid(
-	grid: Dictionary, origin: Vector3, half: float, x: float, z: float, min_up: float
+	grid: Dictionary, origin: Vector3, half: float, x: float, z: float, rng: RandomNumberGenerator
 ) -> Variant:
 	var res: int = grid["res"]
 	var step: float = grid["step"]
@@ -356,11 +412,15 @@ func _sample_from_grid(
 	var tx := fx - gx0
 	var tz := fz - gz0
 
-	var up: PackedFloat32Array = grid["up"]
-	# Nearest grid point, not bilinear — this only ever feeds a >= comparison.
+	var density: PackedFloat32Array = grid["density"]
+	# Nearest grid point, not bilinear — a fractional density is realised by
+	# rolling against it, not by blending two neighbours' tiers together.
 	var nx := gx0 + (1 if tx >= 0.5 else 0)
 	var nz := gz0 + (1 if tz >= 0.5 else 0)
-	if up[nz * res + nx] < min_up:
+	var keep_chance: float = density[nz * res + nx]
+	if keep_chance <= 0.0:
+		return null
+	if keep_chance < 1.0 and rng.randf() >= keep_chance:
 		return null
 
 	var h: PackedFloat32Array = grid["h"]
