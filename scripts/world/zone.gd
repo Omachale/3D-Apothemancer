@@ -4,11 +4,18 @@ extends Node3D
 
 ## Builds a zone's terrain from a declarative table.
 ##
-## Everything below the "LAYOUT" heading is data: add a dictionary to a list and
-## the piece appears. Nothing is stored in the .tscn, so terrain edits are diffs
-## in one readable file rather than thousands of lines of scene text — and the
-## same script serves every future zone by subclassing and overriding the
-## layout functions.
+## Everything below the "LAYOUT" heading READS a table rather than holding one:
+## the actual data — every building, tower, NPC, prop and heightfield feature —
+## lives in [member layout_path] (a JSON file; see [ZoneLayout] and
+## `data/zones/starter.json`) so a terrain edit is a diff in a data file a tool
+## can write, not a code change. Add or move something there and it appears.
+##
+## A SECOND ZONE NEEDS NO NEW CODE: point [member layout_path] at a different
+## JSON file (a new .tscn with that one property overridden is enough). The
+## older "subclass Zone and override the getters" path documented by
+## [ZoneLayout]'s comments still works for anything genuinely code-shaped —
+## the two procedural tree generators below are exactly that: their CODE stays
+## here, only their dials (seed, counts, radii) come from the layout.
 ##
 ## CONVENTION: EVERY `pos` IS RELATIVE TO THE GROUND. The land undulates (see
 ## [method get_heightfield]), so a Y written as an absolute world height would
@@ -18,12 +25,21 @@ extends Node3D
 ## how far its walking surface rises above the ground it stands on.
 ##
 ## This is the same rule [member spawn_position] already used, and it is why the
-## numbers in this file did not have to change when rolling was turned on.
+## numbers in the layout did not have to change when rolling was turned on.
 ##
 ## A staircase starts from the ground and ascends toward its own local +Z, so
 ## `yaw` aims it. Set a staircase's rise to exactly match the plate it feeds —
 ## and put both on the same levelling pad, or the ground under each end moves
 ## independently and the rise no longer matches.
+##
+## EVERY FLAT-BOTTOMED STRUCTURE NEEDS A PAD UNDER IT. The keep, the terrace and
+## the staircase feeding it are rigid rectangles; on undulating ground they
+## float at one corner and sink at the other. A "flatten" feature in the
+## heightfield levels the ground beneath each one and eases back to the land
+## around it. The rule when adding a structure is that its footprint goes in
+## the layout's `buildings`, `towers` or `plates` list AND a pad covering it
+## goes in `heightfield.features`, a little larger than the footprint so the
+## blend starts clear of the walls.
 
 const PLATE_SCRIPT := preload("res://scripts/terrain/ground_plate.gd")
 const STAIRS_SCRIPT := preload("res://scripts/terrain/stairs.gd")
@@ -33,18 +49,24 @@ const MOUND_SCRIPT := preload("res://scripts/terrain/terrain_mound.gd")
 const GRASS_MANAGER_SCRIPT := preload("res://scripts/world/grass_manager.gd")
 const TERRAIN_MANAGER_SCRIPT := preload("res://scripts/world/terrain_manager.gd")
 
-const WITCH_SCENE := preload("res://scenes/npc/Witch.tscn")
-const MEDIEVAL_SCENE := preload("res://scenes/npc/Medieval.tscn")
-
+## These three stay preloaded HERE (not just in [ZoneLayout]'s registries)
+## because the `_make_*` builders below use them as the FALLBACK when a
+## layout entry omits "material" entirely — e.g. TerraceStairs never
+## specifies one, and must keep defaulting to stone. Duplicated on purpose:
+## a builder's own default and a data file's registry answer different
+## questions ("what if the key is absent" vs "what can the key resolve to").
 const MAT_GRASS := preload("res://resources/materials/ground_grass.tres")
 const MAT_HIGHLAND := preload("res://resources/materials/ground_highland.tres")
 const MAT_STONE := preload("res://resources/materials/stone.tres")
 
-const ROCK_SCENE := preload("res://scenes/props/RockProp.tscn")
-const WALL_SCENE := preload("res://scenes/props/WallProp.tscn")
-const PINE_TREE_SCENE := preload("res://scenes/props/PineTreeProp.tscn")
+## Where this zone's layout lives — see [ZoneLayout]. A second zone is a new
+## JSON file and a .tscn overriding this one property; no new code needed.
+@export var layout_path := "res://data/zones/starter.json"
 
-## Where the player is dropped when this zone loads.
+## Where the player is dropped when this zone loads. Read from the layout on
+## first use ([method _ensure_layout]) rather than exported directly, so a
+## subclass or an override .tscn can still set it the old way if it ever
+## needs to — but nothing in this project does that today.
 @export var spawn_position := Vector3(10.0, 0.5, 22.0)
 ## Which way they face on arrival, in degrees.
 @export var spawn_yaw := 180.0
@@ -52,101 +74,41 @@ const PINE_TREE_SCENE := preload("res://scenes/props/PineTreeProp.tscn")
 ## Built once by [method _ensure_heightfield] and shared by everything that
 ## needs to know where the ground is.
 var _heightfield: Heightfield = null
+## Parsed once by [method _ensure_layout] and shared by every getter below.
+var _layout: ZoneLayout = null
 
 
 # ---------------------------------------------------------------------------
 # LAYOUT
 # ---------------------------------------------------------------------------
 
-## THE SHAPE OF THE LAND ITSELF — see [Heightfield]. This replaced the fixed
-## 140x140 "MainPlane" slab that used to be the world: ground is now a function
-## of position rather than an object, so terrain_manager.gd can build only the
+## THE SHAPE OF THE LAND ITSELF — see [Heightfield]. Ground is a function of
+## position rather than an object, so terrain_manager.gd can build only the
 ## part near the player, at whatever detail that distance deserves, and the map
 ## has no edge to fall off.
 ##
-## Everything here is data. A future terrain-painting tool would write this list
-## rather than anyone typing coordinates.
-##
-## ROLLING IS ON NOW. It was held at 0 through the migration so the streamed
-## world could be compared against the flat slab it replaced and any difference
-## blamed on the streaming rather than on the land — that comparison is done.
-## 1.5 metres over a ~125-unit wavelength is swells, not hills: enough that open
-## ground reads as land from a low camera, gentle enough to walk over without
-## noticing. Hills are still features.
-##
-## EVERY FLAT-BOTTOMED STRUCTURE NEEDS A PAD UNDER IT. The keep, the terrace and
-## the staircase feeding it are rigid rectangles; on undulating ground they
-## float at one corner and sink at the other. A "flatten" feature levels the
-## ground beneath each one and eases back to the land around it — see
-## [Heightfield]'s note on the two passes. The rule when adding a structure is
-## that its footprint goes in [method get_buildings], [method get_towers] or
-## [method get_plates] AND a pad covering it goes here, a little larger than
-## the footprint so the blend starts clear of the walls.
-##
-## The terrace pad deliberately covers its staircase too. Stairs rise by a fixed
-## amount to meet the plate above, so the ground they start from and the ground
-## the plate stands on have to be the SAME level — two pads at their own
-## separate levels would leave the top step short of the terrace or through it.
+## The scalars and the feature list both come from the layout
+## (`heightfield.*` in [member layout_path]'s JSON) — see [ZoneLayout] and
+## that file's per-feature `note` fields for the reasoning behind each one
+## (SouthValley's falloff derivation, why EastMountain's summit pad is a
+## plateau rather than a hill, and so on).
 func get_heightfield() -> Heightfield:
+	var hf: Dictionary = _ensure_layout().heightfield_scalars
 	var field := Heightfield.new()
-	field.seed = 20240
-	field.base_elevation = 0.0
-	field.rolling_amplitude = 3.0
-	field.rolling_frequency = 0.008
-	field.mountains_amplitude = 45.0
-	field.mountains_frequency = 0.002
-	field.mountains_protected_center = Vector2(10.0, 22.0)
-	field.mountains_protected_radius = 80.0
-	field.features = [
-		# Was the "SouthHill" TerrainMound. Same centre, radius and height, so
-		# the same hill stands in the same place — it is simply described now
-		# rather than built.
-		{"type": "hill", "pos": Vector2(-46, -46),
-			"radius": 24.0, "height": 11.0, "noise": 1.9},
-
-		# EastMountain — a scale test for rolling/features, and a proving ground
-		# for a large landmark. 200m across, its nearest foot 20m east of spawn
-		# (spawn.x=10, so the foot sits at x=30; centre is the foot plus the
-		# 100m radius). height=47 with noise=1.5 measures a peak slope of ~38
-		# degrees (see feature_max_slope_degrees) — matching the SouthHill's own
-		# proven-climbable steepness, safely under the player's 50 degree limit
-		# even before accounting for the smoothing a real mesh adds. Rounded
-		# summit by construction (smoothstep is flat-tangent at d=0), so the
-		# flatten pad below settles onto the true peak height with nothing to
-		# override.
-		{"type": "plateau", "pos": Vector2(130, 22),
-			"radius": 100.0, "height": 47.0, "noise": 1.5, "flat_ratio": 0.15},
-
-		# Pads. Listed after the hill because pads apply to the finished additive
-		# surface, and a pad's default level is read from it — order within this
-		# list only matters between pads that overlap, and these two do not.
-		#
-		# StoneKeep, footprint 16x12 centred (-26,-14): one unit of margin all
-		# round so the blend never starts under a wall.
-		{"type": "flatten", "pos": Vector2(-26, -14),
-			"size": Vector2(18, 14), "falloff": 10.0},
-		# Terrace (20x20 centred (-25,20)) AND TerraceStairs (which start at
-		# z=32 and climb to z=30): one pad spanning z 8..34 so both sit on the
-		# same level, plus a unit of margin on x.
-		{"type": "flatten", "pos": Vector2(-25, 21),
-			"size": Vector2(22, 26), "falloff": 10.0},
-		# EastMountain summit: a level 20x20 platform for EastMountainTower
-		# (see get_towers) — comfortably larger than the tower's own derived
-		# 8.4x8.4 footprint. The
-		# hill feature above is a PLATEAU, not a hill: its flat_ratio already
-		# holds the top exactly level out to radius 15, comfortably past the
-		# pad's own half-extent (10, ~14.1 at the rounded corners) — so this pad
-		# has almost nothing to reconcile and only exists to erase the noise
-		# ripple, not to fight the mountain's own slope. (A plain "hill" here
-		# was tried first: pinning a flat core near ITS curved summit forced
-		# the pad's shoulder to make up, in one falloff band, height the raw
-		# hill spreads over a much longer radius — 53.9 degrees at a 10-unit
-		# falloff, worse (52.9) at 36, because widening the band just reached
-		# further into the hill's own steepest ground. The plateau's genuinely
-		# flat top avoids the whole fight.)
-		{"type": "flatten", "pos": Vector2(130, 22),
-			"size": Vector2(20, 20), "falloff": 12.0},
-	]
+	field.seed = hf.get("seed", 20240)
+	field.base_elevation = hf.get("base_elevation", 0.0)
+	field.rolling_amplitude = hf.get("rolling_amplitude", 0.0)
+	field.rolling_frequency = hf.get("rolling_frequency", 0.0)
+	field.mountains_amplitude = hf.get("mountains_amplitude", 0.0)
+	field.mountains_frequency = hf.get("mountains_frequency", 0.0)
+	field.mountains_protected_center = hf.get("mountains_protected_center", Vector2.ZERO)
+	field.mountains_protected_radius = hf.get("mountains_protected_radius", 0.0)
+	# Already fully converted (Vector2 pos, typed floats, only the keys each
+	# feature's JSON entry actually had) by ZoneLayout — see its file header
+	# on why an absent key must stay absent rather than gaining a default
+	# here (heightfield.gd's pad "level" default is COMPUTED from the
+	# terrain when missing, not a fixed fallback).
+	field.features = _layout.heightfield_features
 	return field
 
 
@@ -155,39 +117,32 @@ func get_heightfield() -> Heightfield:
 ## that a raised plate sinks into whatever is beneath it, with no gap.
 ##
 ## A plate is rigid, so the ground under it must be level — give every plate a
-## "flatten" pad in [method get_heightfield] covering its footprint. Without one
-## the plate stays flat while the land does not, and its edges float.
+## "flatten" pad in the layout's `heightfield.features` covering its footprint.
+## Without one the plate stays flat while the land does not, and its edges
+## float.
 ##
 ## The ground plane is no longer one of these — see [method get_heightfield].
 ## What belongs here now is anything architectural: a level platform, a
 ## foundation, anything with a hard edge the land itself should not have.
 func get_plates() -> Array:
-	return [
-		# A raised terrace on the far side of the map, to prove the system
-		# handles more than one elevation.
-		{"name": "Terrace", "pos": Vector3(-25, 1.5, 20), "size": Vector2(20, 20),
-			"thickness": 1.9, "material": MAT_HIGHLAND},
-	]
+	return _ensure_layout().plates
 
 
 ## Staircases. `steps` x `step_height` must equal the rise to the target plate.
 ## `yaw` rotates the flight; 0 climbs toward +Z, 180 toward -Z, 90 toward +X.
 func get_staircases() -> Array:
-	return [
-		# --- Terrace, rise 1.5 (5 x 0.3) ---
-		{"name": "TerraceStairs", "pos": Vector3(-25, 0, 32), "yaw": 180.0,
-			"steps": 5, "width": 6.0},
-	]
+	return _ensure_layout().staircases
 
 
 ## Standalone sculpted hills, built as their own mesh with their own collider.
 ##
-## Empty now: the one hill this zone had is a heightfield feature instead, which
-## streams and takes detail levels, neither of which a TerrainMound can do.
-## Kept available for the case a heightfield cannot express — a hill with an
-## overhang, or one that has to sit on top of a plate rather than on the land.
+## Empty in the shipped layout: the one hill this zone had is a heightfield
+## feature instead, which streams and takes detail levels, neither of which a
+## TerrainMound can do. Kept available for the case a heightfield cannot
+## express — a hill with an overhang, or one that has to sit on top of a plate
+## rather than on the land.
 func get_mounds() -> Array:
-	return []
+	return _ensure_layout().mounds
 
 
 ## How the ground is streamed and how its detail falls away with distance — see
@@ -220,12 +175,7 @@ func get_mounds() -> Array:
 ## ring. verify_zone_layout.gd measures the real gaps against this land — check
 ## it after changing the terrain, since a hill or a raised amplitude widens them.
 func get_terrain_manager() -> Dictionary:
-	return {"chunk_size": 32.0, "unload_margin": 48.0, "skirt_depth": 2.0,
-		"tile_resolution": 32,
-		"ring_count": 5,
-		"max_screen_error_px": 24.0,
-		"collision_level_maximum": 0,
-		"horizon_distance": 480.0}
+	return _ensure_layout().terrain_manager
 
 
 ## Distance haze, and the view ranges derived from it — see atmosphere.gd for
@@ -242,11 +192,7 @@ func get_terrain_manager() -> Dictionary:
 ## budget spread over a distance, so stretching it to the horizon just blurs
 ## every shadow near the player to buy shadows the fog already hides.
 func get_atmosphere() -> Dictionary:
-	return {"fog_begin_fraction": 0.35, "fog_end_fraction": 0.95,
-		"fog_curve": 1.6, "fog_opacity": 1.0,
-		"fog_color": Color(0.65098, 0.72549, 0.792157),
-		"fog_sun_scatter": 0.1, "fog_sky_affect": 0.0,
-		"far_margin": 1.05, "shadow_distance": 55.0}
+	return _ensure_layout().atmosphere
 
 
 ## Wall-to-wall grass, streamed in square chunks around the player rather
@@ -258,8 +204,7 @@ func get_atmosphere() -> Dictionary:
 ## show at a bit past the default zoom in any direction the player rotates to,
 ## so a chunk should never visibly pop in or out.
 func get_grass_manager() -> Dictionary:
-	return {"chunk_size": 20.0, "load_radius": 90.0, "unload_radius": 120.0,
-		"density": 45.0, "max_slope": 42.0, "seed": 20240}
+	return _ensure_layout().grass_manager
 
 
 ## Footprints, in world XZ, where grass must not grow.
@@ -271,18 +216,22 @@ func get_grass_manager() -> Dictionary:
 ##
 ## Each entry must cover the object's footprint; check a new building's `pos`
 ## and `size` in [method get_buildings] against this list.
+##
+## Most entries in the layout are a literal `rect`; a `derive: tower_footprint`
+## entry instead names a point and gets resolved here, at read time, via
+## [method _tower_exclusion_rect] — see [ZoneLayout]'s header on why that stays
+## symbolic in the data rather than freezing Tower.suggest_size()'s current
+## answer into a number that could go stale the moment the tower's own stair
+## geometry changes.
 func get_grass_exclusions() -> Array:
-	return [
-		# StoneKeep: centred (-26, -14), 16 x 12.
-		Rect2(-34.0, -20.0, 16.0, 12.0),
-		# Terrace: centred (-25, 20), 20 x 20. Grass under a solid plate is
-		# invisible and still costs a blade, so it is simply not planted.
-		Rect2(-35.0, 10.0, 20.0, 20.0),
-		# EastMountainTower: centred (130, 22). Tower's footprint is derived
-		# from its stair geometry rather than authored (see tower.gd), so it
-		# is asked directly rather than duplicated here as a literal.
-		_tower_exclusion_rect(Vector2(130, 22)),
-	]
+	var out: Array = []
+	for entry in _ensure_layout().grass_exclusion_entries:
+		match entry["kind"]:
+			"rect":
+				out.append(entry["rect"])
+			"derive_tower":
+				out.append(_tower_exclusion_rect(entry["pos"]))
+	return out
 
 
 ## Builds a throwaway Tower just to ask its derived footprint — see
@@ -299,101 +248,67 @@ func _tower_exclusion_rect(centre: Vector2) -> Rect2:
 ## `building.gd`; `pos` is the ground its ground floor sits on, and `yaw` turns
 ## it (the front door is on the -Z side before rotation).
 func get_buildings() -> Array:
-	return [
-		# Turned to put the front door on the north face. The default camera
-		# looks toward -X/-Z, so a door on the -Z face would never be seen.
-		{"name": "StoneKeep", "pos": Vector3(-26, 0, -14), "yaw": 180.0,
-			"size": Vector2(16, 12), "levels": 3, "level_height": 3.2},
-	]
+	return _ensure_layout().buildings
 
 
 ## Tall, narrow towers with a spiral interior stair — see tower.gd. pos is
 ## the ground the base slab sits on; yaw turns it (the door is on the -Z
 ## side before rotation, same convention as get_buildings).
 func get_towers() -> Array:
-	return [
-		# EastMountain summit tower: sits on the "future tower" pad (see
-		# get_heightfield's summit flatten) and inside _generate_mountain_trees'
-		# clear_radius. yaw 90 puts the door on the WEST face — verified with a
-		# headless probe of Basis(UP, yaw) against the compass convention in
-		# compass.gd — approached from the mountain's western shoulder, which
-		# is also where the treeline and the climbable slope both are.
-		{"name": "EastMountainTower", "pos": Vector3(130, 0, 22), "yaw": 90.0,
-			"height": 30.0},
-	]
+	return _ensure_layout().towers
 
 
 ## NPCs. Visual only for now — no health, no aggro, no attacks — see
-## [[DESIGN_GOALS.md]]. Placed south of spawn on the open plane: clear of the
-## Terrace (x in [-35,-15], z in [10,30]) and the keep (x in [-34,-18],
-## z in [-20,-8]) footprints, so they don't spawn inside solid ground. Check
-## new footprints against those before adding an NPC position.
+## [[DESIGN_GOALS.md]]. Check a new position against the layout's other
+## footprints (Terrace, StoneKeep, ...) before adding one, so it doesn't spawn
+## inside solid ground.
 func get_npcs() -> Array:
-	return [
-		{"scene": WITCH_SCENE, "pos": Vector3(-18, 0, 50), "wander_radius": 5.0},
-		{"scene": MEDIEVAL_SCENE, "pos": Vector3(14, 0, 16), "wander_radius": 5.0},
-	]
+	return _ensure_layout().npcs
 
 
-## Static scenery with collision. Scattered by hand so there is something to
-## bump into and something to judge distance against.
+## Static scenery with collision, plus the two procedurally-generated tree
+## stands appended after it (EastMountain's cover and the south forest — see
+## [method _generate_mountain_trees] and [method _generate_forest]).
 ##
 ## `pos.y` is clearance above the land, like everything else here, so 0 means
 ## "standing on the ground wherever that turns out to be". An optional `sink`
 ## buries the base — see [method _ground] for when that is wanted.
 func get_props() -> Array:
-	return [
-		# Rocks sit half-buried anyway, and burying them a little further hides
-		# the sliver of ground a sphere leaves visible on a slope.
-		{"scene": ROCK_SCENE, "pos": Vector3(6, 0, 14), "yaw": 0.0, "scale": 1.0, "sink": 0.15},
-		{"scene": ROCK_SCENE, "pos": Vector3(-4, 0, 18), "yaw": 60.0, "scale": 1.4, "sink": 0.15},
-		{"scene": ROCK_SCENE, "pos": Vector3(20, 0, -6), "yaw": 120.0, "scale": 1.2, "sink": 0.15},
-
-		# Six metres long, so on rolling ground one end lifts clear — see
-		# _ground()'s note on `sink`. 0.5 covers the worst this land does across
-		# that span; a wall on genuinely steep ground would need a foundation.
-		{"scene": WALL_SCENE, "pos": Vector3(-14, 0, 24), "yaw": 0.0, "scale": 1.0, "sink": 0.5},
-		{"scene": WALL_SCENE, "pos": Vector3(-35, 0, 6), "yaw": 90.0, "scale": 1.0, "sink": 0.5},
-
-		# Pines (see PineTreeProp.tscn) — the first real tree-model asset, and
-		# the proving ground for wind response on something other than grass.
-		#
-		# STALE, AS WARNED: originally strung out along Wind.direction_degrees
-		# (-45) so a gust would visibly reach one tree after the next.
-		# direction_degrees is now 90 (see wind.gd — the camera default yaw
-		# changing from 45 to 0 broke the old perpendicularity, so the wind
-		# axis moved to restore it), and these five hand-placed positions were
-		# never re-laid to match. They still catch gusts and sway correctly —
-		# gust_total() samples wherever a tree actually stands — they just no
-		# longer form a deliberate line along the wind. The 160-tree forest
-		# below (_generate_forest) reads Wind.direction_degrees live and has
-		# no such staleness risk; prefer that pattern over hardcoded positions
-		# for anything meant to stay aligned with the wind axis.
-		{"scene": PINE_TREE_SCENE, "pos": Vector3(21, 0, 13), "yaw": 200.0, "scale": 0.9},
-		{"scene": PINE_TREE_SCENE, "pos": Vector3(17, 0, 21), "yaw": 65.0, "scale": 1.15},
-		{"scene": PINE_TREE_SCENE, "pos": Vector3(15, 0, 18), "yaw": 0.0, "scale": 1.0},
-		{"scene": PINE_TREE_SCENE, "pos": Vector3(2, 0, 22), "yaw": 130.0, "scale": 1.05},
-		{"scene": PINE_TREE_SCENE, "pos": Vector3(-1, 0, 31), "yaw": 290.0, "scale": 0.95},
-
-	] + _generate_mountain_trees() + _generate_forest()
+	var layout := _ensure_layout()
+	return layout.props \
+		+ _generate_mountain_trees(layout.generator_mountain_trees) \
+		+ _generate_forest(layout.generator_forest)
 
 
 ## EastMountain's tree cover: a mix of tight clumps and a sparse scatter
 ## between them, so the slope reads as a real treeline rather than a grid or a
-## uniform sprinkle. Confined to an annulus around the peak at (130, 22) —
-## inside [param clear_radius] is left bare for the tower this pad
-## (get_heightfield()'s summit "flatten" feature) exists for, and outside
-## [param outer_radius] stays clear of the steepest ground near the rim.
+## uniform sprinkle. Confined to an annulus around the peak — inside
+## `clear_radius` is left bare for the tower on that summit's flatten pad, and
+## outside `outer_radius` stays clear of the steepest ground near the rim. All
+## the numbers below (including the seed) come from the layout's
+## `generators.mountain_trees` — see `starter.json`'s note on that section for
+## the annulus reasoning; this function is the CODE that walks those numbers,
+## not the numbers themselves.
 ##
 ## Deterministic: seeded RNG only, same rule as [method _generate_forest].
-func _generate_mountain_trees() -> Array:
+func _generate_mountain_trees(cfg: Dictionary) -> Array:
 	var rng := RandomNumberGenerator.new()
-	rng.seed = 20240 + 900
+	rng.seed = cfg.get("seed", 21140)
 
-	var center := Vector2(130.0, 22.0)
-	var clear_radius := 26.0
-	var outer_radius := 92.0
-	var target_count := 100
+	var center: Vector2 = cfg.get("centre", Vector2(130.0, 22.0))
+	var clear_radius: float = cfg.get("clear_radius", 26.0)
+	var outer_radius: float = cfg.get("outer_radius", 92.0)
+	var target_count: int = cfg.get("target_count", 100)
+	var clump_count: int = cfg.get("clump_count", 9)
+	var clump_size_min: int = cfg.get("clump_size_min", 6)
+	var clump_size_max: int = cfg.get("clump_size_max", 13)
+	var clump_radius_margin: float = cfg.get("clump_radius_margin", 8.0)
+	var clump_jitter: float = cfg.get("clump_jitter", 4.0)
+	var clump_scale_min: float = cfg.get("clump_scale_min", 0.85)
+	var clump_scale_max: float = cfg.get("clump_scale_max", 1.25)
+	var fill_scale_min: float = cfg.get("fill_scale_min", 0.8)
+	var fill_scale_max: float = cfg.get("fill_scale_max", 1.3)
+	var scene: PackedScene = cfg.get("scene", ZoneLayout.SCENES["pine_tree"])
 
 	var trees: Array = []
 
@@ -401,14 +316,15 @@ func _generate_mountain_trees() -> Array:
 	# Placed before the sparse fill so the fill can simply top up whatever
 	# count the clumps didn't reach, rather than the two fighting over a
 	# shared budget.
-	var clump_count := 9
 	for _c in clump_count:
-		var clump_r := rng.randf_range(clear_radius, outer_radius - 8.0)
+		var clump_r := rng.randf_range(clear_radius, outer_radius - clump_radius_margin)
 		var clump_angle := rng.randf() * TAU
 		var clump_center := center + Vector2(cos(clump_angle), sin(clump_angle)) * clump_r
-		var clump_size := rng.randi_range(6, 13)
+		var clump_size := rng.randi_range(clump_size_min, clump_size_max)
 		for _i in clump_size:
-			var jitter := Vector2(rng.randf_range(-4.0, 4.0), rng.randf_range(-4.0, 4.0))
+			var jitter := Vector2(
+				rng.randf_range(-clump_jitter, clump_jitter),
+				rng.randf_range(-clump_jitter, clump_jitter))
 			var pos := clump_center + jitter
 			# A clump anchored just outside clear_radius can still jitter a
 			# tree or two across it; drop those rather than let the tower's
@@ -416,8 +332,9 @@ func _generate_mountain_trees() -> Array:
 			if pos.distance_to(center) < clear_radius:
 				continue
 			trees.append({
-				"scene": PINE_TREE_SCENE, "pos": Vector3(pos.x, 0.0, pos.y),
-				"yaw": rng.randf_range(0.0, 360.0), "scale": rng.randf_range(0.85, 1.25),
+				"scene": scene, "pos": Vector3(pos.x, 0.0, pos.y),
+				"yaw": rng.randf_range(0.0, 360.0),
+				"scale": rng.randf_range(clump_scale_min, clump_scale_max),
 			})
 
 	# Sparse fill: uniform across the whole annulus, closing the gaps between
@@ -427,29 +344,32 @@ func _generate_mountain_trees() -> Array:
 		var r := rng.randf_range(clear_radius, outer_radius)
 		var pos := center + Vector2(cos(angle), sin(angle)) * r
 		trees.append({
-			"scene": PINE_TREE_SCENE, "pos": Vector3(pos.x, 0.0, pos.y),
-			"yaw": rng.randf_range(0.0, 360.0), "scale": rng.randf_range(0.8, 1.3),
+			"scene": scene, "pos": Vector3(pos.x, 0.0, pos.y),
+			"yaw": rng.randf_range(0.0, 360.0),
+			"scale": rng.randf_range(fill_scale_min, fill_scale_max),
 		})
 
 	return trees
 
 
 ## A dense pine forest, well clear of spawn — see [method get_props] for the
-## header comment on the cluster this extends. Laid out as a band ROTATED 90
-## DEGREES FROM the small cluster above: rows run along [member Wind]'s
+## header comment on the small hand-placed cluster this extends. Laid out as a
+## band ROTATED 90 DEGREES FROM that cluster: rows run along [member Wind]'s
 ## direction axis (so a gust sweeps down a row, tree after tree) and the band
 ## itself is long in the perpendicular axis, so the forest reads as a mass
-## from any angle rather than a single-file line.
+## from any angle rather than a single-file line. All the numbers below come
+## from the layout's `generators.forest`; this function is the code that
+## walks them.
 ##
 ## Deterministic: seeded RNG only, per [[DESIGN_GOALS.md]]'s "keep generated
 ## content seeded" rule — rerunning build() must place the same trees.
-func _generate_forest() -> Array:
+func _generate_forest(cfg: Dictionary) -> Array:
 	var rng := RandomNumberGenerator.new()
-	rng.seed = 20240 + 700
+	rng.seed = cfg.get("seed", 20940)
 
-	# Read live from Wind rather than hardcoding the angle a second time, so the
-	# forest can't quietly drift out of alignment with it the way the five
-	# hand-placed pines in get_props() did.
+	# Read live from Wind rather than hardcoding the angle a second time, so
+	# the forest can't quietly drift out of alignment with it the way the
+	# hand-placed pines in the layout's props list did (see their `note`).
 	#
 	# ...except in the EDITOR, where build() also runs and non-@tool autoloads
 	# like Wind exist as bare Nodes carrying none of their script's properties —
@@ -458,20 +378,20 @@ func _generate_forest() -> Array:
 	# way. The fallback duplicates wind.gd's own declared default, so the editor
 	# preview matches the running game; if that default changes, change this too.
 	var wind_degrees := 90.0
-	if not Engine.is_editor_hint():
+	if cfg.get("align_to_wind", true) and not Engine.is_editor_hint():
 		wind_degrees = Wind.direction_degrees
 	var along_wind := Vector2(sin(deg_to_rad(wind_degrees)), cos(deg_to_rad(wind_degrees)))
 	var across_wind := Vector2(-along_wind.y, along_wind.x)
 
-	# Anchored well past the small pine cluster and the SouthHill feature
-	# (centred (-46,-46), radius ~24) so the two stands don't overlap and
-	# neither clips the hill's steeper ground.
-	var anchor := Vector2(-40.0, 90.0)
-
-	var row_count := 4 # "several trees in width"
-	var row_spacing := 4.0
-	var trees_per_row := 40
-	var tree_spacing := 4.0 # Close enough for a dense stand, clear of collisions.
+	var anchor: Vector2 = cfg.get("anchor", Vector2(-40.0, 90.0))
+	var row_count: int = cfg.get("rows", 4)
+	var row_spacing: float = cfg.get("row_spacing", 4.0)
+	var trees_per_row: int = cfg.get("trees_per_row", 40)
+	var tree_spacing: float = cfg.get("tree_spacing", 4.0)
+	var jitter_amount: float = cfg.get("jitter", 1.2)
+	var scale_min: float = cfg.get("scale_min", 0.85)
+	var scale_max: float = cfg.get("scale_max", 1.2)
+	var scene: PackedScene = cfg.get("scene", ZoneLayout.SCENES["pine_tree"])
 
 	var trees: Array = []
 	for row in row_count:
@@ -479,13 +399,15 @@ func _generate_forest() -> Array:
 		for i in trees_per_row:
 			var along_offset := (i - (trees_per_row - 1) / 2.0) * tree_spacing
 			# Small jitter so the stand doesn't read as a rank-and-file grid.
-			var jitter := Vector2(rng.randf_range(-1.2, 1.2), rng.randf_range(-1.2, 1.2))
+			var jitter := Vector2(
+				rng.randf_range(-jitter_amount, jitter_amount),
+				rng.randf_range(-jitter_amount, jitter_amount))
 			var xz := anchor + across_wind * along_offset + along_wind * row_offset + jitter
 			trees.append({
-				"scene": PINE_TREE_SCENE,
+				"scene": scene,
 				"pos": Vector3(xz.x, 0, xz.y),
 				"yaw": rng.randf_range(0.0, 360.0),
-				"scale": rng.randf_range(0.85, 1.2),
+				"scale": rng.randf_range(scale_min, scale_max),
 			})
 	return trees
 
@@ -520,12 +442,34 @@ func _ensure_heightfield() -> Heightfield:
 	return _heightfield
 
 
+## Loads and validates [member layout_path] on first ask and reuses it, so
+## every getter reads the same parse rather than re-reading the file. Any
+## problem found goes through push_error() here — once, at the point of
+## discovery — rather than at every getter that happens to touch the bad
+## section, and [member spawn_position]/[member spawn_yaw] are synced from
+## the layout on a clean load so external readers of those two exports (see
+## verify_zone_layout.gd) see the same numbers the layout declares. On a
+## failed load the exported defaults stand untouched and every getter below
+## falls back to its own `.get(key, default)` — a broken zone comes up mostly
+## empty and loud in the console, not crashed.
+func _ensure_layout() -> ZoneLayout:
+	if _layout == null:
+		_layout = ZoneLayout.new(layout_path)
+		for err in _layout.errors:
+			push_error("Zone '%s' layout (%s): %s" % [name, layout_path, err])
+		if _layout.is_ok():
+			spawn_position = _layout.spawn_pos
+			spawn_yaw = _layout.spawn_yaw
+	return _layout
+
+
 func build() -> void:
 	for child in get_children():
 		child.free()
 	# Dropped so an edited layout takes effect on rebuild rather than the old
-	# land quietly persisting.
+	# land (or the old parse of layout_path) quietly persisting.
 	_heightfield = null
+	_layout = null
 	var field := _ensure_heightfield()
 	# Guarded like every other Game access in this script: build() also runs in
 	# the editor, where the autoload is not fully set up and touching it fails.

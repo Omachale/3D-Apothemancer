@@ -9,6 +9,105 @@ still discoverable before it gets suggested again or contradicted.
 
 ## 2026-08-13
 
+- Task #4: moved the zone's whole layout — every heightfield feature, plate,
+  staircase, building, tower, NPC, prop, plus the two procedural tree
+  generators' dials — out of hardcoded GDScript literals in `zone.gd` and
+  into `data/zones/starter.json`, so a terrain edit is now a data diff a
+  future tool can write, not a code change. New `scripts/world/zone_layout.gd`
+  (`ZoneLayout`) owns ALL the JSON knowledge: a schema-driven loader that
+  converts JSON into the exact typed shapes (Vector2/Vector3/Rect2, resolved
+  PackedScene/Material) the existing `_make_*` builders in `zone.gd` already
+  expected, and validates on every load rather than only in tests (unknown
+  key, wrong type/arity, unresolvable scene/material name, unsupported
+  `format_version` — every error collected and reported at once, not
+  first-fail). `zone.gd`'s getters are now thin reads over the parsed
+  layout; nothing outside `zone_layout.gd` knows JSON exists. A second zone
+  needs no new code — a new `.json` plus a `.tscn` with `layout_path`
+  overridden is enough; the old "subclass and override a getter" path still
+  works for anything genuinely code-shaped (the tree generators are exactly
+  that: code stays in `zone.gd`, only their seed/count/radius dials moved).
+
+  THE ONE THING THAT MATTERS HERE: several existing call sites branch on a
+  key being ABSENT, not on its value — `heightfield.gd`'s flatten pads
+  compute `level` from the terrain when it's missing, `_make_tower` only
+  sets `size` when `data.has("size")` (else Tower solves its own footprint),
+  `_make_terrain_manager` defaults five fields to the NODE's own declared
+  defaults. `ZoneLayout`'s conversion is written to never inject a default
+  of its own — a key present in JSON survives conversion, a key absent from
+  JSON stays absent from the returned Dictionary. Getting this wrong would
+  be silent: the world still builds, just subtly different, with nothing to
+  fail. Caught, not by inspection, but by a golden-file equivalence check
+  built specifically for this migration: `scripts/dev/dump_zone_layout.gd`
+  (run via `scenes/dev/DumpZoneLayout.tscn`) prints every `Zone` getter's
+  fully-expanded output at fixed float precision; captured once against the
+  original GDScript literals, then again after the rewrite — `diff` came
+  back completely empty, proving the migration changed nothing about the
+  actual world despite touching almost every line of `zone.gd`.
+
+  New standing suite `verify_zone_data.gd` (`-Suites zone_data`) replaces
+  what GDScript's own type system used to guarantee for free: asserts the
+  shipped JSON parses with zero errors, spot-checks a few values that matter
+  (SouthValley's falloff=60/level=-30, EastMountain's radius=100, spawn
+  position) survived transcription, and explicitly asserts the
+  absence-sensitive cases stayed absent (`towers[0]` has no `size`; at least
+  one flatten pad has no `level`) rather than trusting that nothing
+  regressed. Registered in `run_verify.ps1`; all 11 suites (the 10 existing
+  plus this one) pass.
+
+  Rationale that used to live as `zone.gd` comments (SouthValley's falloff
+  derivation, why EastMountain's summit pad is a plateau rather than a hill,
+  the stale-pines warning, why the terrace and its stairs share one pad)
+  moved to per-entry `"note"` fields in the JSON, right next to the numbers
+  they explain — cross-cutting rules (the pos-is-clearance convention, the
+  every-structure-needs-a-pad rule) stayed as `zone.gd` doc comments since
+  they govern every entry, not one.
+
+  Gotcha hit and now documented in both `zone_layout.gd` and
+  `run_verify.ps1`'s existing `-RescanClasses` note: `ZoneLayout` is a new
+  `class_name`, so the FIRST headless run after adding it parse-errors
+  (`Could not find type "ZoneLayout" in the current scope"`) until the
+  editor's global class cache is rescanned (`Godot --headless --editor
+  --quit`) — exactly the failure mode `-RescanClasses` exists for.
+- Widened grass and rain coverage: `grass_manager.gd` load_radius 50→80m (chunks build
+  earlier, streaming stutter moves further from player), `rain.gd` emission_size 44→88
+  (doubling the spawn box so rain stays edge-to-edge at wide camera zoom).
+- Added SouthValley, a 30m-deep basin south of spawn (`scripts/world/zone.gd`
+  features list, centred (10, 220)) — required two new capabilities on
+  Heightfield's "flatten" pads (`scripts/terrain/heightfield.gd`), both
+  generic and documented there, not one-off valley code:
+    - `shape: "ellipse"` — a pad's core can now be curved everywhere
+      instead of the rectangle-with-rounded-corners it was, for anything
+      that should read as carved by nature rather than built.
+      `_ellipse_outside_distance` gets the outside-the-core world distance
+      EXACTLY (no trig, no approximation) by using the ellipse's own
+      definition: `d` (the normalised radius) is by construction equal to
+      `distance_from_centre / true_boundary_distance`, so
+      `distance_from_centre * (1 - 1/d)` recovers that boundary distance
+      directly. `_pad_max_slope_degrees`'s probe dict was missing `shape`
+      entirely (it only carried pos/half/falloff) — would have silently
+      measured every ellipse pad's slope against the wrong, rectangular
+      footprint; caught before it shipped.
+    - `noise` on a pad — irregularity added ON TOP of the level a pad
+      blends to, reusing the pad's own falloff weight rather than a second
+      curve, so it is strong across the whole core and fades out exactly
+      where the level-blend does. Existing pads are unaffected (default 0
+      reproduces the old perfectly-level behaviour).
+  SouthValley's own numbers: core 40x80 (the requested "large flat
+  surface"), falloff 60, noise 4.5 (proportionally similar to the SouthHill
+  feature's 1.9 on an 11m hill), explicit level -30. The 60-unit falloff
+  is not a styling choice — it is the minimum the player's 50 degree
+  floor_max_angle forces for a 30m drop (a smoothstep's steepest point is
+  1.5x its average slope, so 30m needs ≥57 units of run even before noise
+  adds its own gradient) — which is also why the overall footprint ends up
+  ~160x200 despite an 80x40 core: a valley this deep cannot be climbed out
+  of in less space than that, regardless of technique. Measured (not
+  predicted) at 45.2 degrees via the existing numerical pad-slope walk,
+  comfortably under the 50 degree limit and in line with every other
+  feature (37-47 degree range). `verify_zone_layout.gd`'s skirt/seam check
+  had its z-sampling range widened from a fixed square (which only reached
+  z=138) out to z=320 — SouthValley's footprint would otherwise have gone
+  completely unchecked by the one test whose job is catching exactly this
+  ("land got more dramatic, recheck the skirt").
 - Fixed camera ground-collision getting stuck permanently pushed up
   (`scripts/camera/camera_rig.gd`). The clamp writes `_camera.global_position`,
   and because the camera is a CHILD of the rig, that write lands on its

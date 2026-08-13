@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://c8k1n1yh3wq7x"]
+
+[ext_resource type="Script" path="res://scripts/dev/dump_zone_layout.gd" id="1_dump"]
+
+[node name="DumpZoneLayout" type="Node"]
+script = ExtResource("1_dump")

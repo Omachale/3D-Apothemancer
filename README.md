@@ -54,7 +54,8 @@ scripts/
   terrain/grass_field.gd      wind-swayed grass patch — one MultiMesh draw call
   world/wind.gd               autoload — the one global wind, everything reads it
   terrain/building.gd         multi-storey building + the cutaway reveal
-  world/zone.gd               declarative terrain layout + builder
+  world/zone.gd               reads a zone's layout (data/zones/*.json) and builds it
+  world/zone_layout.gd        loads + validates a zone's JSON layout — see ZoneLayout
   world/world.gd              spawn wiring
   dev/dev_tools.gd            screenshots and scripted-input harness
 resources/                    materials, ground shader, environment
@@ -63,11 +64,14 @@ assets/models/Mage.glb        player mesh (texture is embedded in the file)
 
 ## How to extend it
 
-**Add terrain.** Everything in the starter zone comes from six tables at the
-top of `scripts/world/zone.gd` — `get_plates()`, `get_staircases()`,
-`get_mounds()`, `get_buildings()`, `get_npcs()`, `get_props()`. Adding a hill
-is one dictionary entry. Nothing is baked into the `.tscn`, so terrain changes
-are readable diffs.
+**Add terrain.** Everything in the starter zone — heightfield features,
+plates, staircases, buildings, towers, NPCs, props, the two procedural tree
+generators' dials — lives in `data/zones/starter.json`, not in code. Adding a
+hill is one entry in `heightfield.features`. `scripts/world/zone.gd` reads
+that file (via `scripts/world/zone_layout.gd`, which validates it — an
+unknown key or wrong-shaped value fails loudly rather than silently) and
+builds it; nothing is baked into the `.tscn`, so terrain changes are readable
+diffs in a data file, not a code change.
 
 **Add grass.** `get_grass()`, via `grass_field.gd` — a patch is one `MultiMesh`
 draw call, so instance count at *render* time costs almost nothing (three
@@ -101,9 +105,12 @@ exported in the same shape (root node + `Skeleton3D` + sibling
 `AnimationPlayer` with baked in-place clips) works with no code change — which
 is why one script drives both existing characters.
 
-**Add a zone.** Subclass `zone.gd`, override the layout functions, save a scene
-with it attached, and hand the `PackedScene` to `Game.change_zone()`. The
-switching path already exists.
+**Add a zone.** Write a new `data/zones/*.json` file, save a `.tscn` with
+`zone.gd` attached and its `layout_path` export pointed at that file, and
+hand the `PackedScene` to `Game.change_zone()`. No new code needed — the
+switching path already exists. (Subclassing `zone.gd` and overriding a getter
+still works for anything genuinely code-shaped, the way the two tree
+generators are — most zones won't need it.)
 
 **Conventions.** A plate's Y *is* the surface you walk on. A staircase starts at
 its own origin and climbs toward local `+Z`, so `yaw` aims it; its rise
@@ -377,7 +384,7 @@ pwsh -File scripts/dev/run_verify.ps1
 Single suites, and the switch to use after adding a `class_name`:
 
 ```bash
-pwsh -File scripts/dev/run_verify.ps1 -Suites tower,zone_layout -RescanClasses
+pwsh -File scripts/dev/run_verify.ps1 -Suites tower,zone_layout,zone_data -RescanClasses
 ```
 
 **Why not call Godot directly.** Every `verify_*.gd` exits through a single

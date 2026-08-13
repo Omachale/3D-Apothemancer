@@ -205,11 +205,14 @@ func _check_skirt_covers_seams(zone: Zone, field: Heightfield) -> int:
 		var gap := 0.0
 		# Across the built-up part of the zone and out past the hill, on a grid
 		# offset off the round numbers so samples do not all land on the same
-		# phase of the noise.
+		# phase of the noise. Z runs much further south than X spreads east/west
+		# because SouthValley (centred z=220, footprint out to roughly z=120..320)
+		# would otherwise sit entirely outside this check — a 30m-deep pad is
+		# exactly the kind of "land got more dramatic" this exists to catch.
 		for i in 90:
-			for j in 90:
+			for j in 140:
 				var x := -120.0 + 2.9 * float(i)
-				var z := -120.0 + 2.9 * float(j)
+				var z := -150.0 + 3.2 * float(j)
 				# Both axes: a seam can run either way, and the surface is not
 				# symmetric about them.
 				for axis in [Vector2(spacing, 0.0), Vector2(0.0, spacing)]:

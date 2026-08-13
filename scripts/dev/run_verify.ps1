@@ -149,6 +149,7 @@ $AllSuites = [ordered]@{
     'terrain_chunk'   = @{ Script = 'res://scripts/dev/verify_terrain_chunk.gd';   Scene = $null }
     'terrain_manager' = @{ Script = 'res://scripts/dev/verify_terrain_manager.gd'; Scene = 'res://scenes/dev/VerifyTerrainManager.tscn' }
     'zone_layout'     = @{ Script = 'res://scripts/dev/verify_zone_layout.gd';     Scene = 'res://scenes/dev/VerifyZoneLayout.tscn' }
+    'zone_data'       = @{ Script = 'res://scripts/dev/verify_zone_data.gd';       Scene = 'res://scenes/dev/VerifyZoneData.tscn' }
     'tower'           = @{ Script = 'res://scripts/dev/verify_tower.gd';           Scene = 'res://scenes/dev/VerifyTower.tscn' }
     'atmosphere'      = @{ Script = 'res://scripts/dev/verify_atmosphere.gd';      Scene = 'res://scenes/dev/VerifyAtmosphere.tscn' }
     'health'          = @{ Script = 'res://scripts/dev/verify_health.gd';          Scene = 'res://scenes/dev/VerifyHealth.tscn' }

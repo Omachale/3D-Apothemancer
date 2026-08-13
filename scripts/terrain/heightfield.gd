@@ -110,9 +110,17 @@ extends Resource
 ##
 ## "flatten" is the odd one out — it blends rather than sums, and takes its own
 ## keys (see the two-pass note at the top of this file):
-##   size    Vector2 full XZ extent of the perfectly level core. RECTANGULAR
-##           because everything that needs one is: a keep, a terrace, a
-##           staircase landing. `radius` is accepted as a square shorthand.
+##   size    Vector2 full XZ extent of the core. RECTANGULAR by default —
+##           everything that needs one is: a keep, a terrace, a staircase
+##           landing. `radius` is accepted as a square shorthand. See `shape`
+##           for the other option.
+##   shape   "rect" (default) or "ellipse". A rectangular pad's core has
+##           straight edges (falloff rounds only the corners); an elliptical
+##           one is curved along its whole boundary, `size` becoming the
+##           ellipse's full width/length rather than a box's. Reach for this
+##           whenever a hard architectural edge would look wrong — a valley,
+##           a lake bed, anything meant to read as carved by nature rather
+##           than built.
 ##   falloff how far outside the core the surface takes to ease back to the land
 ##           it would otherwise have had. Corners are rounded, so a pad reads as
 ##           a graded shoulder rather than a cut block.
@@ -120,6 +128,12 @@ extends Resource
 ##           right — the pad settles onto whatever height the rest of the
 ##           surface has at `pos`, so it follows the land instead of pinning the
 ##           world to an arbitrary number.
+##   noise   optional irregularity added ON TOP of `level`, at full strength
+##           across the whole core and fading out over the SAME falloff band as
+##           the level blend itself (reusing that weight, not a second curve) —
+##           so a pad can level ground while still reading as rough or bumpy
+##           rather than the billiard-table flatness a bare pad produces. 0
+##           (the default) reproduces the old, perfectly level behaviour.
 @export var features: Array = []: set = _set_features
 
 @export_group("Wiring")
@@ -148,7 +162,11 @@ func height_at(x: float, z: float) -> float:
 	for pad in _pads:
 		var weight := _pad_weight(pad, x, z)
 		if weight > 0.0:
-			h = lerpf(h, pad["level"] as float, weight)
+			var target: float = pad["level"] as float
+			var noise: float = pad["noise"] as float
+			if not is_zero_approx(noise):
+				target += _detail.get_noise_2d(x, z) * noise
+			h = lerpf(h, target, weight)
 	return h
 
 
@@ -294,6 +312,7 @@ func _pad_max_slope_degrees(feature: Dictionary) -> float:
 		"pos": feature.get("pos", Vector2.ZERO) as Vector2,
 		"half": _pad_half_extent(feature),
 		"falloff": maxf(feature.get("falloff", 8.0), 0.001),
+		"shape": feature.get("shape", "rect"),
 	}
 	var centre: Vector2 = probe["pos"]
 	var extent: Vector2 = (probe["half"] as Vector2) + Vector2.ONE * (probe["falloff"] as float)
@@ -348,24 +367,53 @@ func _feature_height(shape: Dictionary, x: float, z: float) -> float:
 ## How strongly a pad levels the ground at a world XZ position: 1 across its
 ## core, easing to 0 at the far edge of its falloff band.
 ##
-## The distance used is the distance OUTSIDE the core rectangle, which is zero
-## anywhere within it — so a pad is genuinely level everywhere under the thing
-## standing on it, not merely level at its middle. Taking that as the length of
-## the per-axis overhangs (rather than the larger of them) rounds the corners,
-## which matters: square corners would put a crease running diagonally out of
-## each one, and creases are exactly what a pad exists to remove.
+## Two core shapes, see [member features]'s "flatten" doc for when to reach
+## for which: RECTANGLE (default) measures the distance OUTSIDE the core box,
+## zero anywhere within it, taken as the length of the per-axis overhangs
+## (rather than the larger of them) so corners round instead of putting a
+## crease running diagonally out of each one. ELLIPSE measures distance
+## outside the core ellipse instead, via [method _ellipse_outside_distance] —
+## curved along its whole boundary, no corners to round.
+##
+## Either way the result is "how far outside the core, in world units", fed
+## through the same smoothstep — so both shapes share one falloff behaviour
+## and only differ in where the core's edge actually is.
 func _pad_weight(pad: Dictionary, x: float, z: float) -> float:
 	var centre: Vector2 = pad["pos"]
 	var half: Vector2 = pad["half"]
-	var over_x := absf(x - centre.x) - half.x
-	var over_z := absf(z - centre.y) - half.y
-	if over_x <= 0.0 and over_z <= 0.0:
-		return 1.0
-	var outside := Vector2(maxf(over_x, 0.0), maxf(over_z, 0.0)).length()
 	var falloff: float = pad["falloff"]
+	var outside: float
+	if pad.get("shape", "rect") == "ellipse":
+		outside = _ellipse_outside_distance(x - centre.x, z - centre.y, half)
+	else:
+		var over_x := absf(x - centre.x) - half.x
+		var over_z := absf(z - centre.y) - half.y
+		if over_x <= 0.0 and over_z <= 0.0:
+			return 1.0
+		outside = Vector2(maxf(over_x, 0.0), maxf(over_z, 0.0)).length()
+	if outside <= 0.0:
+		return 1.0
 	if outside >= falloff:
 		return 0.0
 	return smoothstep(1.0, 0.0, outside / falloff)
+
+
+## World-unit distance from (dx, dz) to the boundary of the ellipse with
+## semi-axes `half`, measured OUTWARD along the ray from the centre through
+## the point — 0 or negative when the point is already inside.
+##
+## `d` below is the standard normalised ellipse radius (1 exactly on the
+## boundary); the ellipse's own definition makes `d` exactly equal to
+## `distance_from_centre / true_boundary_distance_along_this_ray`, so
+## `distance_from_centre / d` recovers that boundary distance with no
+## trigonometry and no approximation — exact for any aspect ratio, not just
+## near-circular ones.
+func _ellipse_outside_distance(dx: float, dz: float, half: Vector2) -> float:
+	var d := sqrt((dx / half.x) * (dx / half.x) + (dz / half.y) * (dz / half.y))
+	if d <= 1.0:
+		return 0.0
+	var distance_from_centre := sqrt(dx * dx + dz * dz)
+	return distance_from_centre * (1.0 - 1.0 / d)
 
 
 ## Rebuilds everything cached from the exported numbers: the two noise layers,
@@ -418,6 +466,8 @@ func _rebuild() -> void:
 			"half": _pad_half_extent(pad),
 			"falloff": maxf(pad.get("falloff", 8.0), 0.001),
 			"level": level,
+			"shape": pad.get("shape", "rect"),
+			"noise": pad.get("noise", 0.0) as float,
 		})
 	_pads = resolved
 

@@ -44,7 +44,7 @@ const GRASS_SCRIPT := preload("res://scripts/terrain/grass_field.gd")
 ## [member radius_per_distance] — because this alone only covers one specific
 ## framing. Left as a floor rather than replaced outright so close-up framing
 ## (inspect mode, a very tight zoom) still gets a sensible minimum patch.
-@export var load_radius := 50.0
+@export var load_radius := 80.0
 ## Distance at which a loaded chunk is freed entirely, at the default zoom —
 ## same floor-not-replacement relationship to the effective radius as
 ## [member load_radius]. Kept a full chunk_size or more above it so a player

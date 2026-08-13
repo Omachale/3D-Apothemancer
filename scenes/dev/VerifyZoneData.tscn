@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://dqk3n7x5m2wty"]
+
+[ext_resource type="Script" path="res://scripts/dev/verify_zone_data.gd" id="1_verify"]
+
+[node name="VerifyZoneData" type="Node"]
+script = ExtResource("1_verify")

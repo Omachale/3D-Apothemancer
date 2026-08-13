@@ -84,7 +84,7 @@ const LIGHT_FADE_TIME := 4.0
 ## The box actually used grows with camera zoom — see [member box_size_per_distance]
 ## — so this is only the minimum, sized to comfortably cover the ~40-unit view
 ## the default camera frames at its default distance.
-@export var emission_size := Vector2(44.0, 44.0)
+@export var emission_size := Vector2(88.0, 88.0)
 ## World units the emission box grows per unit of camera zoom distance, so rain
 ## keeps covering the visible ground as the player zooms out instead of leaving
 ## bare screen at the edges. 2.2 matches emission_size at the camera's default
