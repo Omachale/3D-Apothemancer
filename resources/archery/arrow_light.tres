@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="ArrowSpec" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/combat/arrow_spec.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"light"
+display_name = "Light Arrow"
+mass_g = 25.0
+drag_coefficient = 0.00013

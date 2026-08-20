@@ -40,6 +40,7 @@ func _ready() -> void:
 	_section("terrain_manager", zone.get_terrain_manager())
 	_section("atmosphere", zone.get_atmosphere())
 	_section("grass_manager", zone.get_grass_manager())
+	_section("tree_scatter", zone.get_tree_scatter())
 	_section("grass_exclusions", zone.get_grass_exclusions())
 	_section("buildings", zone.get_buildings())
 	_section("towers", zone.get_towers())

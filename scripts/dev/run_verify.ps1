@@ -155,6 +155,12 @@ $AllSuites = [ordered]@{
     'health'          = @{ Script = 'res://scripts/dev/verify_health.gd';          Scene = 'res://scenes/dev/VerifyHealth.tscn' }
     'targeting'       = @{ Script = 'res://scripts/dev/verify_targeting.gd';       Scene = 'res://scenes/dev/VerifyTargeting.tscn' }
     'aim'             = @{ Script = 'res://scripts/dev/verify_aim.gd';             Scene = 'res://scenes/dev/VerifyAim.tscn' }
+    'spell_profiles'  = @{ Script = 'res://scripts/dev/verify_spell_profiles.gd';  Scene = 'res://scenes/dev/VerifySpellProfiles.tscn' }
+    'archery_physics' = @{ Script = 'res://scripts/dev/verify_archery_physics.gd'; Scene = 'res://scenes/dev/VerifyArcheryPhysics.tscn' }
+    'ballistics'      = @{ Script = 'res://scripts/dev/verify_ballistic_solver.gd'; Scene = 'res://scenes/dev/VerifyBallisticSolver.tscn' }
+    'arrow_flight'    = @{ Script = 'res://scripts/dev/verify_arrow_flight.gd';     Scene = 'res://scenes/dev/VerifyArrowFlight.tscn' }
+    'archery_wiring'  = @{ Script = 'res://scripts/dev/verify_archery_wiring.gd';   Scene = 'res://scenes/dev/VerifyArcheryWiring.tscn' }
+    'lightning'       = @{ Script = 'res://scripts/dev/verify_lightning.gd';        Scene = 'res://scenes/dev/VerifyLightning.tscn' }
     'camera_pitch'    = @{ Script = 'res://scripts/dev/verify_camera_pitch.gd';    Scene = 'res://scenes/dev/VerifyCameraPitch.tscn' }
 }
 

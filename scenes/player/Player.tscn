@@ -1,4 +1,4 @@
-[gd_scene load_steps=11 format=3]
+[gd_scene load_steps=14 format=3]
 
 [ext_resource type="Script" path="res://scripts/player/player_controller.gd" id="1"]
 [ext_resource type="PackedScene" path="res://assets/models/Mage.glb" id="2"]
@@ -6,9 +6,12 @@
 [ext_resource type="Script" path="res://scripts/player/spell_caster.gd" id="4"]
 [ext_resource type="Script" path="res://scripts/player/cast_effect.gd" id="5"]
 [ext_resource type="Script" path="res://scripts/player/player_attacks.gd" id="6"]
-[ext_resource type="PackedScene" path="res://scenes/player/RedBolt.tscn" id="7"]
-[ext_resource type="PackedScene" path="res://scenes/player/BlueBomb.tscn" id="8"]
+[ext_resource type="Resource" path="res://resources/spells/red_bolt.tres" id="7"]
+[ext_resource type="Resource" path="res://resources/spells/bow_shot.tres" id="8"]
 [ext_resource type="Script" path="res://scripts/combat/health.gd" id="9"]
+[ext_resource type="Script" path="res://scripts/combat/archery_loadout.gd" id="10"]
+[ext_resource type="Resource" path="res://resources/archery/bow_recurve.tres" id="11"]
+[ext_resource type="Resource" path="res://resources/archery/arrow_standard.tres" id="12"]
 
 [sub_resource type="CapsuleShape3D" id="PlayerShape"]
 radius = 0.45
@@ -29,6 +32,15 @@ shape = SubResource("PlayerShape")
 
 [node name="SpellCaster" type="Node" parent="."]
 script = ExtResource("4")
+primary_profile = ExtResource("7")
+secondary_profile = ExtResource("8")
+
+[node name="ArcheryLoadout" type="Node" parent="."]
+script = ExtResource("10")
+bow = ExtResource("11")
+arrow = ExtResource("12")
+strength = 10.0
+archery = 10.0
 
 [node name="Animator" type="Node" parent="."]
 script = ExtResource("3")
@@ -38,8 +50,6 @@ script = ExtResource("5")
 
 [node name="PlayerAttacks" type="Node" parent="."]
 script = ExtResource("6")
-primary_scene = ExtResource("7")
-secondary_scene = ExtResource("8")
 
 [node name="Health" type="Node" parent="."]
 script = ExtResource("9")

@@ -48,6 +48,7 @@ const TOWER_SCRIPT := preload("res://scripts/terrain/tower.gd")
 const MOUND_SCRIPT := preload("res://scripts/terrain/terrain_mound.gd")
 const GRASS_MANAGER_SCRIPT := preload("res://scripts/world/grass_manager.gd")
 const TERRAIN_MANAGER_SCRIPT := preload("res://scripts/world/terrain_manager.gd")
+const TREE_SCATTER_MANAGER_SCRIPT := preload("res://scripts/world/tree_scatter_manager.gd")
 
 ## These three stay preloaded HERE (not just in [ZoneLayout]'s registries)
 ## because the `_make_*` builders below use them as the FALLBACK when a
@@ -207,7 +208,19 @@ func get_grass_manager() -> Dictionary:
 	return _ensure_layout().grass_manager
 
 
-## Footprints, in world XZ, where grass must not grow.
+## Ambient tree cover, streamed in square chunks the same way as
+## [method get_grass_manager] — see tree_scatter_manager.gd. NOT the same
+## thing as [method _generate_mountain_trees]/[method _generate_forest]:
+## those are finite, hand-placed landmark stands; this has no edge and is
+## what keeps trees from running out however far the player walks.
+func get_tree_scatter() -> Dictionary:
+	return _ensure_layout().tree_scatter
+
+
+## Footprints, in world XZ, where grass must not grow. Despite the name, ALSO
+## used for [method _make_tree_scatter_manager]'s exclusions — a building
+## footprint is exactly as invalid a spot for a tree's roots as it is for a
+## blade of grass, so the one list serves both.
 ##
 ## The heightfield describes the ground UNDER a building, not its floor, so
 ## without these, blades sprout through it. The old raycast placement dodged
@@ -507,6 +520,11 @@ func build() -> void:
 	add_child(flora)
 	flora.add_child(_make_grass_manager(get_grass_manager(), field))
 
+	var tree_scatter := Node3D.new()
+	tree_scatter.name = "TreeScatter"
+	add_child(tree_scatter)
+	tree_scatter.add_child(_make_tree_scatter_manager(get_tree_scatter(), field))
+
 	var npcs := Node3D.new()
 	npcs.name = "NPCs"
 	add_child(npcs)
@@ -594,6 +612,34 @@ func _make_grass_manager(data: Dictionary, field: Heightfield) -> GrassManager:
 	manager.density = data.get("density", 90.0)
 	manager.max_slope_degrees = data.get("max_slope", 30.0)
 	manager.seed = data.get("seed", 20240)
+	manager.blade_height = data.get("blade_height", manager.blade_height)
+	manager.blade_width = data.get("blade_width", manager.blade_width)
+	return manager
+
+
+func _make_tree_scatter_manager(data: Dictionary, field: Heightfield) -> TreeScatterManager:
+	var manager: TreeScatterManager = TREE_SCATTER_MANAGER_SCRIPT.new()
+	manager.name = "TreeScatterManager"
+	manager.heightfield = field
+	manager.exclusions = get_grass_exclusions()
+	manager.clear_center = Vector2(spawn_position.x, spawn_position.z)
+	manager.chunk_size = data.get("chunk_size", manager.chunk_size)
+	manager.load_radius = data.get("load_radius", manager.load_radius)
+	manager.unload_radius = data.get("unload_radius", manager.unload_radius)
+	manager.radius_per_distance = data.get("radius_per_distance", manager.radius_per_distance)
+	manager.max_radius = data.get("max_radius", manager.max_radius)
+	manager.check_interval = data.get("check_interval", manager.check_interval)
+	manager.seed = data.get("seed", manager.seed)
+	manager.noise_frequency = data.get("noise_frequency", manager.noise_frequency)
+	manager.trees_per_chunk_floor = data.get("trees_per_chunk_floor", manager.trees_per_chunk_floor)
+	manager.trees_per_chunk_max = data.get("trees_per_chunk_max", manager.trees_per_chunk_max)
+	manager.bare_threshold = data.get("bare_threshold", manager.bare_threshold)
+	manager.max_slope_degrees = data.get("max_slope_degrees", manager.max_slope_degrees)
+	manager.clear_radius = data.get("clear_radius", manager.clear_radius)
+	manager.scale_min = data.get("scale_min", manager.scale_min)
+	manager.scale_max = data.get("scale_max", manager.scale_max)
+	if data.has("scene"):
+		manager.scene = data["scene"]
 	return manager
 
 

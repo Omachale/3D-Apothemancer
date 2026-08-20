@@ -58,3 +58,31 @@ class cache. Pass `-RescanClasses` to `run_verify.ps1` to force a rescan —
 the script documents this and does it automatically when needed. The error
 mode is a hang (no crash, no output, just idles), not a crash, so it's caught
 by the timeout, but documenting it here saves debugging time.
+
+## Two different kinds of "placed content" — do not confuse them (2026-08-14)
+
+`get_props()` in `zone.gd` returns things from two architecturally different
+sources, and picking the wrong one for a new request is an easy mistake (one
+was made and reverted the same day this note was written — see DEVLOG.md
+2026-08-14 for the full story):
+
+- **A finite list** (hand-placed `props` entries in the JSON, or a
+  `generators.*` block like `mountain_trees`/`forest`) is instantiated once,
+  entirely, at zone build. Correct for a **specific, deliberate, bounded**
+  thing — a named landmark forest, a windbreak, a rock at a specific spot.
+  Wrong for "cover the ground so it doesn't feel empty," because a finite
+  list always has an outermost entry — an edge the player can walk to no
+  matter how large the list or how big its radius. Making the list bigger
+  moves the edge; it does not remove it, and it makes zone load slower.
+- **A streamed manager** (`TreeScatterManager`, `GrassManager`,
+  `TerrainManager`) builds content in chunks around the player and frees
+  chunks that fall out of range. Cost is bounded by what's near the player,
+  not by the size of the world, so there is no edge — chunks exist wherever
+  the player currently is, including 4km from spawn. This is the only
+  correct choice for "ambient coverage that should never run out."
+
+If a future request is "add more X everywhere" / "X should never run out"
+for something not yet streamed, the fix is a new streamed manager modelled on
+`tree_scatter_manager.gd` or `grass_manager.gd` (density from low-frequency
+`FastNoiseLite`, chunk seed = `base_seed ^ hash(cell coords)` for determinism
+without save data), not a bigger or additional finite generator.

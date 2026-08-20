@@ -1,6 +1,17 @@
 {
   "format_version": 1,
   "name": "ZoneStarter",
+
+  "_guide": {
+    "editing_terrain_features": "Edit heightfield.features array. Three types: 'hill' (radius, height, noise — a dome), 'plateau' (radius, height, noise, flat_ratio — a dome with a flat top), 'flatten' (size or radius, falloff — levels the ground). All pos values are [X, Z] (not Y). See existing hills/plateaus/flattens below for examples and their notes explaining design decisions.",
+    "moving_a_building_or_tower": "Edit buildings[] or towers[]. pos is [X, Y, Z] where Y is CLEARANCE ABOVE GROUND (not absolute world height). yaw is rotation in degrees (0=+X, 90=+Z). Copy an existing entry and modify. Building pos.y is how high its floor rises above the land; tower/NPC pos.y is usually 0 (standing on the ground).",
+    "adding_a_flatten_pad": "Each flat-bottomed structure (building, tower, staircase) NEEDS a flatten feature under it, 1 unit larger than the footprint so blending stays clear of walls. Add to heightfield.features with type='flatten', pos at structure's centre, size slightly larger than the structure, and falloff 10-12 (adjust higher for steeper terrain). If level is omitted, Heightfield computes it from the terrain itself.",
+    "adding_trees": "Two kinds of tree source, don't confuse them. AMBIENT COVERAGE (everywhere, no edge, no gaps) is tree_scatter: a streamed grid, like grass and terrain — see tree_scatter_manager.gd. Its density comes from noise, not a placed list, so 'more trees everywhere' means raising trees_per_chunk_max or lowering bare_threshold there, not adding entries anywhere. LANDMARK STANDS (a specific named forest in a specific spot) are generators.mountain_trees and generators.forest: finite, hand-tuned, and deliberately NOT how you'd cover open ground (a finite list always has an edge — that's the whole reason tree_scatter exists). Add a new landmark stand by copying one of those two blocks; add ambient coverage everywhere by tuning tree_scatter, never by adding more generators.",
+    "adding_an_npc": "Edit npcs[] array. Required: scene (must be 'witch' or 'medieval' as defined in zone_layout.gd), pos. Optional: wander_radius (how far the NPC roams; omit if you want them to stand still). Copy an existing entry and modify.",
+    "adding_a_prop": "Edit props[] array. Required: scene ('rock', 'wall', 'pine_tree'), pos. Optional: yaw (rotation), scale (size multiplier, default 1.0), sink (how deep to bury it in the ground). Copy an existing entry and modify.",
+    "tweaking_atmosphere_grass_terrain": "Edit terrain_manager, atmosphere, grass_manager dicts. These control rendering, fog, grass density, etc. All are optional — each class has its own defaults. See zone_layout.gd's SECTION_FIELD_TYPES for the full list of valid keys."
+  },
+
   "spawn": {
     "pos": [10.0, 0.5, 22.0],
     "yaw": 180.0,
@@ -52,7 +63,7 @@
     "skirt_depth": 2.0,
     "tile_resolution": 32,
     "ring_count": 5,
-    "max_screen_error_px": 24.0,
+    "max_screen_error_px": 36.0,
     "collision_level_maximum": 0,
     "horizon_distance": 480.0,
     "note": "Tiles GROW with distance: chunk_size is the innermost tile, doubling each of ring_count rings outward (32/64/128/256/512). max_screen_error_px picks the ring from projected screen size, not a fixed-distance ladder. Only ring 0 gets collision. horizon_distance is the hard edge past which nothing builds — pushing it out wants distance fog first or the edge is plainly visible. skirt_depth is the level-0 apron; verify_zone_layout.gd measures the real gaps against this land."
@@ -75,9 +86,11 @@
     "chunk_size": 20.0,
     "load_radius": 90.0,
     "unload_radius": 120.0,
-    "density": 45.0,
+    "density": 11.25,
     "max_slope": 42.0,
     "seed": 20240,
+    "blade_height": 0.64,
+    "blade_width": 0.10,
     "note": "load_radius is sized to clear everything the isometric camera can show a bit past default zoom in any rotation, so a chunk should never visibly pop in or out."
   },
 
@@ -174,5 +187,25 @@
       "align_to_wind": true,
       "note": "A dense pine forest well clear of spawn, laid out as a band ROTATED 90 DEGREES FROM the small hand-placed cluster in props: rows run along Wind's live direction axis (so a gust sweeps down a row, tree after tree) and the band itself is long in the perpendicular axis, so the forest reads as a mass from any angle. anchor (-40, 90) sits well past the small pine cluster and the SouthHill feature (centred (-46,-46), radius ~24) so the two stands don't overlap and neither clips the hill's steeper ground. align_to_wind=true means the generator reads Wind.direction_degrees live at build time (falling back to 90.0, wind.gd's own declared default, in the editor where the Wind autoload isn't fully set up) — see zone.gd's _generate_forest for why hardcoding the angle a second time caused the props-list pines above to drift stale."
     }
+  },
+
+  "tree_scatter": {
+    "chunk_size": 48.0,
+    "load_radius": 140.0,
+    "unload_radius": 170.0,
+    "radius_per_distance": 2.0,
+    "max_radius": 260.0,
+    "check_interval": 0.5,
+    "seed": 30500,
+    "noise_frequency": 0.012,
+    "trees_per_chunk_floor": 1,
+    "trees_per_chunk_max": 10,
+    "bare_threshold": -0.15,
+    "max_slope_degrees": 35.0,
+    "clear_radius": 40.0,
+    "scale_min": 0.75,
+    "scale_max": 1.3,
+    "scene": "pine_tree",
+    "note": "Ambient tree cover, everywhere, forever — the fix for 'trees run out if I walk far enough'. mountain_trees and forest above are AUTHORED landmarks (a specific treeline, a specific windbreak); this is background scatter with no edge, built the same way grass and terrain already are: as a streamed grid of chunks around the player rather than a finite pre-placed list. Every chunk's tree count comes from LOW-FREQUENCY NOISE sampled at its centre (noise_frequency 0.012 -> features roughly 80m across, i.e. copse- and glade-sized, not continent-sized), keyed by chunk coordinate and this seed, so the same chunk always regrows the same trees — no save data needed, same principle as heightfield's noise layers. trees_per_chunk_floor guarantees at least one candidate tree per chunk regardless of the noise roll, which is the actual fix for 'large bare areas': nowhere is a hard zero by construction, only sparser or denser. bare_threshold is where noise stops adding anything ABOVE the floor, so patches below it read as sparse rather than forested; well below 0 on purpose so genuinely empty ground stays rare, not half the map. clear_radius keeps a ring around spawn empty (uses spawn_pos from this same file as its centre) so the starting view isn't cluttered. See tree_scatter_manager.gd for the streaming mechanics and scripts/world/zone.gd's get_tree_scatter/_make_tree_scatter_manager for wiring."
   }
 }

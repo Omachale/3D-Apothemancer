@@ -1,0 +1,6 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/dev/verify_archery_physics.gd" id="1_verify"]
+
+[node name="VerifyArcheryPhysics" type="Node"]
+script = ExtResource("1_verify")

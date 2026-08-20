@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="SpellProfile" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/combat/spell_profile.gd" id="1"]
+[ext_resource type="PackedScene" path="res://scenes/player/RedBolt.tscn" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = &"red_bolt"
+windup_mode = 0
+windup_time = 0.3
+release_time = 0.14
+recover_time = 0.32
+cooldown_time = 0.15
+move_scale_while_casting = 0.25
+face_aim_while_casting = true
+allow_input_buffer = true
+animation_tag = &"bolt"
+projectile_scene = ExtResource("2")
+charge_damage_scale = Vector2(1, 1)

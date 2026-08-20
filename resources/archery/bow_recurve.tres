@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="Bow" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/combat/bow.gd" id="1"]
+[ext_resource type="Resource" path="res://resources/archery/archetype_recurve.tres" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = &"recurve"
+display_name = "Horn Recurve"
+archetype = ExtResource("2")
+draw_weight_kg = 20.0
+draw_length_m = 0.72
+quality = 0.7
+storage_factor = 0.78

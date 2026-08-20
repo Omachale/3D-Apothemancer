@@ -59,8 +59,9 @@ const MATERIALS := {
 ## Section name -> {key -> type tag}, for the flat tuning dictionaries.
 ## Nothing here is required: every field has a real fallback already living
 ## in the class that consumes it ([TerrainManager]'s own declared defaults,
-## [GrassManager]'s exported defaults), and duplicating those numbers here
-## as "required" would just be a second place for them to go stale.
+## [GrassManager]'s and [TreeScatterManager]'s exported defaults), and
+## duplicating those numbers here as "required" would just be a second place
+## for them to go stale.
 const SECTION_FIELD_TYPES := {
 	"terrain_manager": {
 		"chunk_size": "float", "unload_margin": "float", "skirt_depth": "float",
@@ -76,6 +77,16 @@ const SECTION_FIELD_TYPES := {
 	"grass_manager": {
 		"chunk_size": "float", "load_radius": "float", "unload_radius": "float",
 		"density": "float", "max_slope": "float", "seed": "int",
+		"blade_height": "float", "blade_width": "float",
+	},
+	"tree_scatter": {
+		"chunk_size": "float", "load_radius": "float", "unload_radius": "float",
+		"radius_per_distance": "float", "max_radius": "float", "check_interval": "float",
+		"seed": "int", "noise_frequency": "float",
+		"trees_per_chunk_floor": "int", "trees_per_chunk_max": "int",
+		"bare_threshold": "float", "max_slope_degrees": "float",
+		"clear_radius": "float", "scale_min": "float", "scale_max": "float",
+		"scene": "scene",
 	},
 }
 
@@ -177,10 +188,10 @@ const GENERATOR_SCHEMAS := {
 	},
 }
 
-const TOP_LEVEL_KEYS := ["format_version", "name", "spawn", "heightfield",
+const TOP_LEVEL_KEYS := ["format_version", "name", "_guide", "spawn", "heightfield",
 	"terrain_manager", "atmosphere", "grass_manager", "grass_exclusions",
 	"plates", "staircases", "mounds", "buildings", "towers", "npcs", "props",
-	"generators"]
+	"generators", "tree_scatter"]
 
 ## Every problem found while loading, in the order encountered. Empty means
 ## the file is fully valid. [Zone] pushes each through push_error(); this
@@ -195,6 +206,7 @@ var heightfield_features: Array = []
 var terrain_manager: Dictionary = {}
 var atmosphere: Dictionary = {}
 var grass_manager: Dictionary = {}
+var tree_scatter: Dictionary = {}
 ## {"kind": "rect", "rect": Rect2} or {"kind": "derive_tower", "pos": Vector2}
 ## — see the file header on why "derive" entries stay symbolic rather than
 ## freezing Tower.suggest_size()'s current answer into a literal. Resolving
@@ -266,6 +278,8 @@ func _load(root: Dictionary) -> void:
 		root.get("atmosphere", {}), SECTION_FIELD_TYPES["atmosphere"], "atmosphere")
 	grass_manager = _convert_flat_dict(
 		root.get("grass_manager", {}), SECTION_FIELD_TYPES["grass_manager"], "grass_manager")
+	tree_scatter = _convert_flat_dict(
+		root.get("tree_scatter", {}), SECTION_FIELD_TYPES["tree_scatter"], "tree_scatter")
 	_load_grass_exclusions(root.get("grass_exclusions", []))
 	plates = _convert_entries(root.get("plates", []), ENTRY_SCHEMAS["plate"], "plates")
 	staircases = _convert_entries(root.get("staircases", []), ENTRY_SCHEMAS["staircase"], "staircases")

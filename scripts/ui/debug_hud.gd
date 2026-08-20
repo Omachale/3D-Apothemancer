@@ -4,7 +4,7 @@ extends CanvasLayer
 ## Worth keeping until movement feel is locked in — the speed and grounded
 ## readouts are what tell you whether a stair transition actually went wrong.
 
-@onready var _label: Label = $Panel/Label
+@onready var _label: Label = $Panel/VBox/Label
 
 var _fps_accum := 0.0
 var _fps_shown := 0.0

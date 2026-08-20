@@ -102,31 +102,46 @@ func _build(skeleton: Skeleton3D, bone: String) -> void:
 	_light.shadow_enabled = false
 	_attachment.add_child(_light)
 
-	_set_visible_amount(0.0)
+	_set_visible_amount(0.0, 0.0)
 
 
 func _process(delta: float) -> void:
 	if _mesh == null:
 		return
 	_flash = maxf(0.0, _flash - delta * 6.0)
-	_set_visible_amount(_caster.weight)
+	# Not every cast is magic — a drawn bow should not have a ball of light in its
+	# fist. See SpellProfile.shows_cast_glow.
+	var profile: SpellProfile = _caster.current_profile
+	if profile and not profile.shows_cast_glow:
+		_set_visible_amount(0.0, 0.0)
+		return
+	_set_visible_amount(_caster.charge, _caster.weight)
 
 
-func _set_visible_amount(charge: float) -> void:
-	# During recovery the caster's weight falls away, which fades the orb out
-	# on its own — the spell has left the hand, so nothing else is needed.
-	var radius := max_radius * charge + flash_radius * _flash
-	var lit := charge > 0.01 or _flash > 0.01
+## The orb is gathered energy, faded by how much of a cast is happening — so it
+## takes its SIZE from [member SpellCaster.charge] and its VISIBILITY from
+## [member SpellCaster.weight]. Those used to be one value and are now two: on a
+## charged cast the orb must keep swelling for as long as the player holds,
+## which weight (blended in over a fraction of a second and then flat) cannot
+## express. During recovery weight falls away and fades the orb out on its own,
+## while charge deliberately holds the value that was fired.
+func _set_visible_amount(charge: float, blend: float) -> void:
+	var amount := charge * blend
+	var radius := max_radius * amount + flash_radius * _flash
+	var lit := amount > 0.01 or _flash > 0.01
 	_mesh.visible = lit
 	_light.visible = lit
 	if not lit:
 		return
 	_mesh.scale = Vector3.ONE * radius
 	_material.emission_energy_multiplier = 2.0 + 6.0 * _flash
-	_light.light_energy = light_energy * (charge + _flash * 2.0)
+	_light.light_energy = light_energy * (amount + _flash * 2.0)
 
 
-func _on_released(_origin: Vector3, _direction: Vector3) -> void:
+func _on_released(_origin: Vector3, _direction: Vector3, _charge: float) -> void:
+	var profile: SpellProfile = _caster.current_profile
+	if profile and not profile.shows_cast_glow:
+		return
 	_flash = 1.0
 
 

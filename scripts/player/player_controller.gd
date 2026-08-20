@@ -78,6 +78,12 @@ var aim_point := Vector3.ZERO
 ## [method get_aim_target] instead, which keeps the height.
 var aim_direction := Vector3.FORWARD
 
+## True while a UI screen (the character screen, so far) owns input instead of
+## gameplay — see [method set_input_frozen]. Movement and casting are skipped
+## outright rather than merely zeroed, so a menu cannot be reasoned about as
+## "one more caster of zero-length input"; it is simply not gameplay's turn.
+var _input_frozen := false
+
 var state: State = State.IDLE
 ## Horizontal motion the *input* is asking for. Held separately from
 ## [member velocity] so that a shove can be summed on top without either one
@@ -143,18 +149,26 @@ func _physics_process(delta: float) -> void:
 
 	_update_run_toggle()
 	_update_aim()
-	if caster:
+	if caster and not _input_frozen:
 		if Input.is_action_just_pressed("cast_primary"):
 			caster.try_cast("primary")
 		elif Input.is_action_just_pressed("cast_secondary"):
 			caster.try_cast("secondary")
+		# Letting go only matters to a CHARGED cast, where it is what ends the
+		# windup and fires — see SpellCaster.release_charge, which no-ops for
+		# everything else. The tag is passed so releasing the OTHER button
+		# cannot loose a shot the player is still drawing.
+		if Input.is_action_just_released("cast_primary"):
+			caster.release_charge("primary")
+		if Input.is_action_just_released("cast_secondary"):
+			caster.release_charge("secondary")
 
-	if Input.is_action_pressed("debug_fly"):
+	if not _input_frozen and Input.is_action_pressed("debug_fly"):
 		velocity.y = move_toward(velocity.y, fly_lift_speed, fly_lift_acceleration * delta)
 	elif not is_on_floor():
 		velocity.y -= _gravity * gravity_scale * delta
 
-	var direction := _get_move_direction()
+	var direction := Vector3.ZERO if _input_frozen else _get_move_direction()
 	var target_speed := (run_speed if _wants_run() else walk_speed)
 	if caster:
 		target_speed *= caster.get_move_scale()
@@ -314,10 +328,42 @@ func get_aim_target() -> Vector3:
 	return aim_point + Vector3.UP * aim_height
 
 
+## How far a drawn bow has been pulled, 0..1, for any cast profile that defers the
+## question to equipment — see [member SpellProfile.charge_duration_from_owner].
+##
+## Delegated rather than answered here, because how fast a bow draws is archery's
+## business and this class is about moving. Returns -1 with nothing equipped, which
+## spell_caster.gd reads as "cannot answer, use your own clock" — see
+## [method ArcheryLoadout.charge_fraction] for why that is not 0 or 1.
+func get_charge_fraction(hold_time: float) -> float:
+	var loadout := get_node_or_null("ArcheryLoadout") as ArcheryLoadout
+	return loadout.charge_fraction(hold_time) if loadout else -1.0
+
+
+## Called by the character screen on open/close. Freezing cancels any cast in
+## progress rather than leaving it suspended — a charged draw is exactly the
+## kind of thing "C" is likely to interrupt, and a cast silently resuming
+## after the menu closes would be a stranger bug than losing it.
+func set_input_frozen(frozen: bool) -> void:
+	if frozen == _input_frozen:
+		return
+	_input_frozen = frozen
+	if frozen and caster and caster.has_method("cancel"):
+		caster.cancel()
+
+
+## So anything else that polls the cast buttons for its own purpose — Targeting
+## reads a left-click as "select whatever is under the cursor" — can tell a
+## click meant for the menu apart from one meant for the game, without this
+## class needing to know Targeting exists.
+func is_input_frozen() -> bool:
+	return _input_frozen
+
+
 func _face(direction: Vector3, delta: float) -> void:
 	# A cast always turns the character to face its target, whatever they were
 	# walking toward — otherwise the thrust animation points off into nothing.
-	var casting: bool = caster != null and caster.is_casting() and caster.face_aim_while_casting
+	var casting: bool = caster != null and caster.is_casting() and caster.wants_face_aim()
 	var facing := aim_direction if (face_aim or casting) else direction
 	if facing.length_squared() < 0.001:
 		return

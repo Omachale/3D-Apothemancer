@@ -1,0 +1,112 @@
+[gd_scene format=3 uid="uid://b8e5epnv3vbea"]
+
+[ext_resource type="Script" path="res://scripts/ui/character_screen.gd" id="1"]
+[ext_resource type="Resource" path="res://resources/spells/red_bolt.tres" id="2"]
+[ext_resource type="Resource" path="res://resources/spells/blue_bomb.tres" id="3"]
+[ext_resource type="Resource" path="res://resources/spells/lightning_bolt.tres" id="4"]
+[ext_resource type="Resource" path="res://resources/spells/bow_shot.tres" id="5"]
+
+[sub_resource type="StyleBoxFlat" id="CardBackground"]
+bg_color = Color(0.05, 0.05, 0.08, 0.92)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.78, 0.83, 0.88, 0.55)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
+content_margin_left = 18.0
+content_margin_top = 16.0
+content_margin_right = 18.0
+content_margin_bottom = 16.0
+
+[sub_resource type="StyleBoxFlat" id="PickerBackground"]
+bg_color = Color(0, 0, 0, 0.35)
+border_width_top = 1
+border_color = Color(0.78, 0.83, 0.88, 0.3)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+content_margin_left = 8.0
+content_margin_top = 10.0
+content_margin_right = 8.0
+content_margin_bottom = 8.0
+
+[node name="CharacterScreen" type="CanvasLayer"]
+script = ExtResource("1")
+known_profiles = [ExtResource("2"), ExtResource("3"), ExtResource("4"), ExtResource("5")]
+
+[node name="Root" type="Control" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="Card" type="PanelContainer" parent="Root"]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -190.0
+offset_top = -150.0
+offset_right = 190.0
+offset_bottom = 150.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("CardBackground")
+
+[node name="Box" type="VBoxContainer" parent="Root/Card"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="Title" type="Label" parent="Root/Card/Box"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94, 0.95, 0.97, 1)
+theme_override_font_sizes/font_size = 20
+text = "Character"
+horizontal_alignment = 1
+
+[node name="Slots" type="HBoxContainer" parent="Root/Card/Box"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="PrimaryButton" type="Button" parent="Root/Card/Box/Slots"]
+layout_mode = 2
+size_flags_horizontal = 3
+custom_minimum_size = Vector2(0, 36)
+text = "LMB:  —"
+
+[node name="SecondaryButton" type="Button" parent="Root/Card/Box/Slots"]
+layout_mode = 2
+size_flags_horizontal = 3
+custom_minimum_size = Vector2(0, 36)
+text = "RMB:  —"
+
+[node name="Picker" type="PanelContainer" parent="Root/Card/Box"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("PickerBackground")
+
+[node name="PickerBox" type="VBoxContainer" parent="Root/Card/Box/Picker"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="PickerTitle" type="Label" parent="Root/Card/Box/Picker/PickerBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.85, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 14
+text = "Choose attack"
+horizontal_alignment = 1
+
+[node name="List" type="VBoxContainer" parent="Root/Card/Box/Picker/PickerBox"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="Cancel" type="Button" parent="Root/Card/Box/Picker/PickerBox"]
+layout_mode = 2
+text = "Cancel"

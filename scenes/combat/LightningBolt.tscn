@@ -1,0 +1,9 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/combat/lightning_bolt.gd" id="1"]
+
+[node name="LightningBolt" type="Node3D"]
+script = ExtResource("1")
+damage = 18.0
+knockback_force = 14.0
+knockback_lift = 3.0

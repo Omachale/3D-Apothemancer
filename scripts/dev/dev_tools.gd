@@ -45,6 +45,15 @@ extends Node
 ##         to face the mouse while casting, so without this the pose a
 ##         screenshot catches depends on wherever the cursor happened to be —
 ##         pin it to make cast shots repeatable
+##     --perf=8 [--perf-warmup=3] [--perf-label=name] [--perf-disable=grass,rain]
+##         measure frame cost for N seconds and quit, printing where the time
+##         goes (GPU / render-submit CPU / script) and what is being drawn.
+##         --perf-disable removes subsystems so the same route can be re-run
+##         without them; the DIFFERENCE is that subsystem's real cost. See
+##         perf_probe.gd for why an A/B difference answers "what is slow" more
+##         reliably than reading a profiler's attribution. Must run WINDOWED —
+##         --headless has no GPU timings to report. run_perf.ps1 drives the
+##         whole sweep and prints the comparison table.
 ##
 ## Combined, those are enough to assert things like "walking north-west for
 ## four seconds ends up on top of the hill" from a single command.
@@ -78,9 +87,16 @@ var _wind_log_accum := 0.0
 ## around the world origin — a fixed far-off probe would usually read zero.
 var _wind_log_at := Vector2(10.0, 22.0)
 
+const PERF_PROBE_SCRIPT := preload("res://scripts/dev/perf_probe.gd")
+var _perf_seconds := 0.0
+var _perf_warmup := 3.0
+var _perf_label := "baseline"
+var _perf_disable: PackedStringArray = []
+
 
 func _ready() -> void:
 	_parse_args()
+	_start_perf_probe()
 	set_process(_shot_path != "" or not _driven_actions.is_empty()
 		or _log_interval > 0.0 or _cast_at >= 0.0 or _has_cam_override
 		or _has_mouse_override or _has_spawn_at or _wind_log_interval > 0.0
@@ -130,6 +146,14 @@ func _parse_args() -> void:
 				_wind_log_at = Vector2(float(w[0]), float(w[1]))
 			else:
 				push_error("DevTools: --wind-log-at expects x,z.")
+		elif arg.begins_with("--perf="):
+			_perf_seconds = float(arg.substr("--perf=".length()))
+		elif arg.begins_with("--perf-warmup="):
+			_perf_warmup = float(arg.substr("--perf-warmup=".length()))
+		elif arg.begins_with("--perf-label="):
+			_perf_label = arg.substr("--perf-label=".length())
+		elif arg.begins_with("--perf-disable="):
+			_perf_disable = arg.substr("--perf-disable=".length()).split(",", false)
 		elif arg.begins_with("--mouse="):
 			var m := arg.substr("--mouse=".length()).split(",", false)
 			if m.size() == 2:
@@ -137,6 +161,20 @@ func _parse_args() -> void:
 				_has_mouse_override = true
 			else:
 				push_error("DevTools: --mouse expects x,y as viewport fractions.")
+
+
+## The probe lives as a child node with its own _process, so it is unaffected by
+## this autoload's own set_process gating above.
+func _start_perf_probe() -> void:
+	if _perf_seconds <= 0.0:
+		return
+	var probe: Node = PERF_PROBE_SCRIPT.new()
+	probe.name = "PerfProbe"
+	probe.duration = _perf_seconds
+	probe.warmup = _perf_warmup
+	probe.label = _perf_label
+	probe.disabled = _perf_disable
+	add_child(probe)
 
 
 func _process(delta: float) -> void:

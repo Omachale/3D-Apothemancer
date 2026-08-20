@@ -56,7 +56,7 @@ extends Node
 @export_range(0.1, 3.0, 0.05) var breath_speed := 1.1
 
 @export_group("Cast pose")
-## Arms at the top of the windup: hands drawn in toward the chest, elbows
+## Arms at the START of the windup: hands drawn in toward the chest, elbows
 ## folded. (lower, forward, elbow) in radians — see [method _pose_arm].
 @export var cast_windup_arm := Vector3(0.34, 0.18, 1.50)
 ## Arms at full release: driven forward, elbows straightening. Kept a little
@@ -102,6 +102,10 @@ var _bone_ids := {}
 var _bone_to_local := {}
 var _model_base_y := 0.0
 
+## Cast pose sets keyed by [member SpellProfile.animation_tag], built in
+## [method _ready] — see [method _build_pose_sets].
+var _pose_sets: Dictionary = {}
+
 var _phase := 0.0
 var _time := 0.0
 var _move_blend := 0.0
@@ -109,6 +113,7 @@ var _run_blend := 0.0
 
 
 func _ready() -> void:
+	_build_pose_sets()
 	_body = get_parent() as CharacterBody3D
 	_model_root = get_node_or_null(model_root_path) as Node3D
 	if _model_root == null and _body:
@@ -138,6 +143,64 @@ func _ready() -> void:
 		_bone_to_local[key] = _skeleton.get_bone_global_rest(id).basis.orthonormalized().inverse()
 
 
+## The cast poses, keyed by the tag a [SpellProfile] names.
+##
+## THE POSES LIVE HERE AND NOT ON THE PROFILE, deliberately. Every value below
+## is written in Mage.glb's rest space (see this class's header) and means
+## nothing on another rig — carrying them in a spell resource would tie spell
+## data to one character model. A profile names WHICH animation; this owns WHAT
+## that animation is. It also means the eventual swap to real keyframed
+## animation, which this class's header already sketches, changes nothing about
+## the profiles.
+##
+## Each set has three stages — the pose at the start of the windup, at full
+## charge, and at full release — and each stage is PER ARM. A spell that does not
+## charge sets the first two stages the same, and a symmetric one sets both arms
+## the same, which is why "bolt" (every spell that existed before charging did) is
+## untouched by either interpolation.
+##
+## PER ARM BECAUSE A BOW IS NOT SYMMETRIC. The bow arm holds still and extended
+## while the string arm travels from the bow to the cheek — one pose applied to
+## both arms cannot express that, and a two-handed draw where both fists pull back
+## together reads as pantomime. Spells that want both arms doing the same thing
+## simply say so twice.
+##
+## Adding a set is an entry here plus the matching animation_tag on the profile.
+## No other code changes.
+func _build_pose_sets() -> void:
+	_pose_sets[&"bolt"] = {
+		"windup_arm_l": cast_windup_arm, "windup_arm_r": cast_windup_arm,
+		"charged_arm_l": cast_windup_arm, "charged_arm_r": cast_windup_arm,
+		"release_arm_l": cast_release_arm, "release_arm_r": cast_release_arm,
+		"windup_lean": cast_windup_lean,
+		"charged_lean": cast_windup_lean,
+		"release_lean": cast_release_lean,
+	}
+	# A bow draw. (lower, forward, elbow) per arm, in radians — see _pose_arm.
+	# The left arm holds the bow and barely moves across all three stages; the
+	# right hand starts at the string, ends drawn past the cheek (elbow folded
+	# hard, arm swung back), and opens on release.
+	_pose_sets[&"draw_bow"] = {
+		"windup_arm_l": Vector3(0.26, 1.38, 0.12),
+		"charged_arm_l": Vector3(0.26, 1.38, 0.12),
+		"release_arm_l": Vector3(0.28, 1.30, 0.18),
+		"windup_arm_r": Vector3(0.32, 1.15, 0.35),
+		"charged_arm_r": Vector3(0.40, 0.20, 1.75),
+		"release_arm_r": Vector3(0.42, 0.10, 1.55),
+		# Leans back into the draw, then settles forward as the string goes.
+		"windup_lean": -0.02,
+		"charged_lean": -0.10,
+		"release_lean": 0.06,
+	}
+
+
+## The pose set for [param tag], falling back to "bolt" for an unknown or empty
+## one — a spell with a tag nobody has authored poses for still animates as an
+## ordinary cast rather than snapping to the rest pose.
+func _pose_set_for(tag: StringName) -> Dictionary:
+	return _pose_sets.get(tag, _pose_sets[&"bolt"])
+
+
 func _process(delta: float) -> void:
 	_time += delta
 
@@ -160,12 +223,20 @@ func _process(delta: float) -> void:
 	# they are skating regardless of walk/run.
 	_phase = wrapf(_phase + TAU * (speed / maxf(stride_length, 0.01)) * delta, 0.0, TAU)
 
-	var cast_weight: float = _caster.weight if _caster else 0.0
-	var cast_extend: float = _caster.extend if _caster else 0.0
+	var cast_weight := 0.0
+	var cast_charge := 0.0
+	var cast_extend := 0.0
+	var pose: Dictionary = _pose_sets[&"bolt"]
+	if _caster:
+		cast_weight = _caster.weight
+		cast_charge = _caster.charge
+		cast_extend = _caster.extend
+		if _caster.has_method("get_animation_tag"):
+			pose = _pose_set_for(_caster.get_animation_tag())
 
 	_pose_legs()
-	_pose_arms(cast_weight, cast_extend)
-	_pose_body(cast_weight, cast_extend)
+	_pose_arms(pose, cast_weight, cast_charge, cast_extend)
+	_pose_body(pose, cast_weight, cast_charge, cast_extend)
 
 
 func _pose_legs() -> void:
@@ -180,7 +251,8 @@ func _pose_legs() -> void:
 	_set_bone_rot("lowerleg_r", Vector3.RIGHT, -maxf(0.0, sin(_phase + PI - 0.7)) * knee_bend * _move_blend)
 
 
-func _pose_arms(cast_weight: float, cast_extend: float) -> void:
+func _pose_arms(pose: Dictionary, cast_weight: float, cast_charge: float,
+		cast_extend: float) -> void:
 	var swing := lerpf(walk_arm_swing, run_arm_swing, _run_blend) * _move_blend
 	var lift := arm_rest_lower - run_arm_lift * _run_blend * _move_blend
 	var elbow := arm_rest_elbow + 0.35 * _run_blend * _move_blend
@@ -192,20 +264,22 @@ func _pose_arms(cast_weight: float, cast_extend: float) -> void:
 	var right := Vector3(lift, arm_rest_forward + cycle * swing, elbow)
 
 	if cast_weight > 0.001:
-		var cast_arm := cast_windup_arm.lerp(cast_release_arm, cast_extend)
 		var authority := cast_weight * cast_arm_authority
-		left = left.lerp(cast_arm, authority)
-		right = right.lerp(cast_arm, authority)
+		left = left.lerp(_staged_arm(pose, "l", cast_charge, cast_extend), authority)
+		right = right.lerp(_staged_arm(pose, "r", cast_charge, cast_extend), authority)
 
 	_pose_arm("upperarm_l", "lowerarm_l", 1.0, left)
 	_pose_arm("upperarm_r", "lowerarm_r", -1.0, right)
 
 
-func _pose_body(cast_weight: float, cast_extend: float) -> void:
+func _pose_body(pose: Dictionary, cast_weight: float, cast_charge: float,
+		cast_extend: float) -> void:
 	var idle_weight := 1.0 - _move_blend
 	var breath := sin(_time * breath_speed * TAU * 0.5) * breath_amount * idle_weight
 	var twist := sin(_phase) * 0.10 * _move_blend
-	var lean := lerpf(cast_windup_lean, cast_release_lean, cast_extend) * cast_weight
+	# Same two-stage interpolation as the arms — see [method _pose_arms].
+	var drawn_lean: float = lerpf(pose["windup_lean"], pose["charged_lean"], cast_charge)
+	var lean := lerpf(drawn_lean, pose["release_lean"], cast_extend) * cast_weight
 
 	_set_bone_rot("spine", Vector3.UP, -twist)
 	# Chest carries the breathing rise, half the counter-twist and the cast
@@ -225,6 +299,17 @@ func _pose_body(cast_weight: float, cast_extend: float) -> void:
 	var bob := absf(sin(_phase)) * body_bob * _move_blend
 	_model_root.position.y = _model_base_y + bob
 	_model_root.rotation.x = -run_lean * _run_blend * _move_blend
+
+
+## One arm's pose at the current point in the cast, for [param side] "l" or "r".
+##
+## Two interpolations, not one: charge moves the arm through the windup (a bow
+## drawing back), then extend throws it out. For a pose set whose start and charged
+## poses are the same — every spell that does not charge — the first lerp is the
+## identity and the result is exactly what it was before charging existed.
+func _staged_arm(pose: Dictionary, side: String, charge: float, extend: float) -> Vector3:
+	var drawn: Vector3 = pose["windup_arm_" + side].lerp(pose["charged_arm_" + side], charge)
+	return drawn.lerp(pose["release_arm_" + side], extend)
 
 
 ## Poses one arm from a (lower, forward, elbow) triple, in radians.

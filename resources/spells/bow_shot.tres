@@ -1,0 +1,22 @@
+[gd_resource type="Resource" script_class="SpellProfile" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/combat/spell_profile.gd" id="1"]
+[ext_resource type="PackedScene" path="res://scenes/combat/Arrow.tscn" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = &"bow_shot"
+windup_mode = 1
+windup_time = 1.33
+charge_duration_from_owner = true
+release_time = 0.1
+recover_time = 0.28
+cooldown_time = 0.1
+move_scale_while_casting = 0.45
+face_aim_while_casting = true
+allow_input_buffer = false
+animation_tag = &"draw_bow"
+shows_cast_glow = false
+aim_mode = 1
+projectile_scene = ExtResource("2")
+charge_damage_scale = Vector2(1, 1)

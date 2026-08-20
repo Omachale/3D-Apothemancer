@@ -1,0 +1,21 @@
+[gd_resource type="Resource" script_class="SpellProfile" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/combat/spell_profile.gd" id="1"]
+[ext_resource type="PackedScene" path="res://scenes/combat/LightningBolt.tscn" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = &"lightning_bolt"
+windup_mode = 0
+windup_time = 0.6
+release_time = 0.12
+recover_time = 0.45
+cooldown_time = 0.9
+move_scale_while_casting = 0.15
+face_aim_while_casting = true
+allow_input_buffer = true
+animation_tag = &"bolt"
+shows_cast_glow = true
+aim_mode = 2
+projectile_scene = ExtResource("2")
+charge_damage_scale = Vector2(1, 1)

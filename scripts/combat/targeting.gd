@@ -51,7 +51,7 @@ func _process(_delta: float) -> void:
 		clear()
 	elif Input.is_action_just_pressed("target_cycle"):
 		cycle()
-	elif Input.is_action_just_pressed("cast_primary"):
+	elif Input.is_action_just_pressed("cast_primary") and not _input_frozen():
 		_try_select_under_mouse()
 	_drop_if_gone()
 
@@ -174,6 +174,15 @@ func _is_targetable(node: Node3D) -> bool:
 		if health and not health.is_alive():
 			return false
 	return true
+
+
+## True while a UI screen owns the left click instead of gameplay — see
+## player_controller.is_input_frozen. Guarded rather than assumed present,
+## since Targeting also runs against the test harnesses that build a bare
+## player stand-in with no such method.
+func _input_frozen() -> bool:
+	var player: Node = Game.player
+	return player != null and player.has_method("is_input_frozen") and player.is_input_frozen()
 
 
 func _camera() -> Camera3D:

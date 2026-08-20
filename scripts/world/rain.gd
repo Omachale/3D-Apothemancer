@@ -31,17 +31,24 @@ enum Intensity { OFF, LIGHT, MODERATE, HEAVY }
 ## (amount_ratio), how fast they fall, and how visible they are. Real rain
 ## does not fall faster when it's heavier so much as there is simply more of
 ## it — speed only climbs a little between levels, count climbs a lot.
-## light_factor multiplies the sun's energy (1 = untouched). lightning_period
-## is the average seconds between flashes; 0 means no lightning at that level
-## — a drizzle should not have thunder. HEAVY's period is half MODERATE's,
-## i.e. lightning strikes twice as often.
+## light_factor multiplies BOTH the sun's energy and the sky-sourced ambient
+## light together (1 = untouched) — see [method _apply_light_factor]; a
+## single number driving both is what makes the dimming actually visible
+## rather than masked by ambient staying at full strength. LIGHT is no
+## longer a flat 1.0 (which used to mean the first rain toggle — the one a
+## player presses first and is most likely to judge the effect by — did
+## nothing at all to brightness): every level now dims at least a little,
+## climbing to HEAVY's near-storm gloom. lightning_period is the average
+## seconds between flashes; 0 means no lightning at that level — a drizzle
+## should not have thunder. HEAVY's period is half MODERATE's, i.e.
+## lightning strikes twice as often.
 const LEVELS := {
 	Intensity.LIGHT: {"amount_ratio": 0.25, "speed": 10.0, "alpha": 0.35,
-		"light_factor": 1.0, "lightning_period": 0.0},
+		"light_factor": 0.85, "lightning_period": 0.0},
 	Intensity.MODERATE: {"amount_ratio": 0.55, "speed": 13.0, "alpha": 0.5,
-		"light_factor": 0.7, "lightning_period": 25.0},
+		"light_factor": 0.6, "lightning_period": 25.0},
 	Intensity.HEAVY: {"amount_ratio": 1.0, "speed": 16.0, "alpha": 0.65,
-		"light_factor": 0.4, "lightning_period": 5.0},
+		"light_factor": 0.35, "lightning_period": 5.0},
 }
 ## Multiplier on grass's gust-driven lean (rain_sway_boost, a global shader
 ## uniform — see grass.gdshader) at each level, including OFF. Grass already
@@ -124,8 +131,20 @@ var _is_first_flash := false
 
 ## Found lazily once World.tscn's Sun node exists (autoloads are ready before
 ## the main scene is). See the "sun" group added on that node.
+##
+## Rain does NOT write _sun.light_energy directly — sun.gd owns that
+## entirely (see its header on why two writers of one number is a bug
+## waiting to happen with a moving day/night cycle). Instead this tweens
+## _sun.rain_factor, the one property sun.gd exposes for exactly this.
 var _sun: DirectionalLight3D
-var _sun_base_energy := 1.0
+## Found lazily the same way, via the "world_environment" group. Rain used to
+## only dim the SUN, but ambient_light_source on the environment is SKY —
+## entirely independent of the sun's energy — so a storm rolling in barely
+## changed the overall scene brightness; the sky-driven ambient just kept
+## flooding everything. Dimming this alongside the sun is what makes rain
+## actually read as darker.
+var _atmosphere: WorldEnvironment
+var _ambient_base_energy := 1.0
 var _light_tween: Tween
 
 
@@ -141,6 +160,7 @@ func _process(delta: float) -> void:
 
 	_tick_lightning(delta)
 	_ensure_sun()
+	_ensure_atmosphere()
 
 	if intensity == Intensity.OFF:
 		return
@@ -228,8 +248,8 @@ func _sync_box_to_camera() -> void:
 
 
 ## Looks up the Sun the first time it exists (World.tscn's main scene loads
-## after autoloads do, so it isn't there yet in _ready) and captures its
-## un-dimmed energy as the baseline every fade multiplies against.
+## after autoloads do, so it isn't there yet in _ready). No energy to capture
+## any more — sun.gd owns its own baseline; this only ever writes rain_factor.
 func _ensure_sun() -> void:
 	if _sun != null:
 		return
@@ -237,26 +257,51 @@ func _ensure_sun() -> void:
 	if found == null:
 		return
 	_sun = found as DirectionalLight3D
-	_sun_base_energy = _sun.light_energy
 	_apply_light_factor(true) # Snap to whatever level is already active, no fade.
 
 
-## Moves the sun toward _light_factor_target. Fades over LIGHT_FADE_TIME on a
-## normal intensity change; snaps instantly when [param immediate] is true,
-## which only happens once, from _ensure_sun(), so the very first frame the
-## sun is found doesn't visibly fade from full brightness even though rain
-## may already have been running for a while.
-func _apply_light_factor(immediate := false) -> void:
-	if _sun == null:
+## Looks up the WorldEnvironment the same lazy way — see [member _atmosphere].
+## Captures ambient_light_energy AS IT STANDS when first found, not a fixed
+## constant, because atmosphere.gd's apply() duplicates the shared .tres and
+## could in principle publish a different baseline per zone; reading it live
+## keeps this from silently drifting out of sync with that.
+func _ensure_atmosphere() -> void:
+	if _atmosphere != null:
 		return
+	var found := get_tree().get_first_node_in_group("world_environment")
+	if found == null:
+		return
+	_atmosphere = found as WorldEnvironment
+	if _atmosphere.environment != null:
+		_ambient_base_energy = _atmosphere.environment.ambient_light_energy
+	_apply_light_factor(true)
+
+
+## Moves the sun and the ambient light toward _light_factor_target together,
+## so a storm dims BOTH the direct sunlight and the sky-sourced ambient that
+## would otherwise mask it — see [member _atmosphere]'s note. Fades over
+## LIGHT_FADE_TIME on a normal intensity change; snaps instantly when [param
+## immediate] is true, which only happens once per target (from _ensure_sun/
+## _ensure_atmosphere), so the first frame either is found doesn't visibly
+## fade from full brightness even though rain may already have been running.
+func _apply_light_factor(immediate := false) -> void:
+	if _sun == null and _atmosphere == null:
+		return # Nothing found yet (e.g. a bare verify scene with no World.tscn).
 	if _light_tween:
 		_light_tween.kill()
-	var target_energy := _sun_base_energy * _light_factor_target
 	if immediate:
-		_sun.light_energy = target_energy
+		if _sun != null:
+			_sun.rain_factor = _light_factor_target
+		if _atmosphere != null and _atmosphere.environment != null:
+			_atmosphere.environment.ambient_light_energy = _ambient_base_energy * _light_factor_target
 		return
 	_light_tween = create_tween()
-	_light_tween.tween_property(_sun, "light_energy", target_energy, LIGHT_FADE_TIME)
+	_light_tween.set_parallel(true)
+	if _sun != null:
+		_light_tween.tween_property(_sun, "rain_factor", _light_factor_target, LIGHT_FADE_TIME)
+	if _atmosphere != null and _atmosphere.environment != null:
+		_light_tween.tween_property(_atmosphere.environment, "ambient_light_energy",
+			_ambient_base_energy * _light_factor_target, LIGHT_FADE_TIME)
 
 
 func _next_lightning_wait(period: float) -> float:
@@ -325,14 +370,27 @@ func _build_emitter() -> void:
 	# Orients each streak along its own fall direction, so it visibly slants
 	# with the wind instead of always hanging straight up and down.
 	_process_material.particle_flag_align_y = true
+	# Particles fade to transparent over their lifetime, reaching nearly-invisible
+	# by the end. This softens the appearance and prevents sharp edges where old
+	# particles are recycled.
+	var fade_gradient := Gradient.new()
+	fade_gradient.add_point(0.0, Color.WHITE)
+	fade_gradient.add_point(0.85, Color(1.0, 1.0, 1.0, 0.3))
+	fade_gradient.add_point(1.0, Color(1.0, 1.0, 1.0, 0.0))
+	var fade_texture := GradientTexture1D.new()
+	fade_texture.gradient = fade_gradient
+	_process_material.color_ramp = fade_texture
 	_particles.process_material = _process_material
 
 	var mesh := BoxMesh.new()
 	mesh.size = Vector3(0.02, 0.55, 0.02)
 	_draw_material = StandardMaterial3D.new()
 	_draw_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	# Alpha blending with opacity-over-lifetime fade and cool color tint creates
+	# rain that reads as atmospheric rather than flat. Slightly desaturated blue-grey
+	# reads well against both bright sky and dark terrain.
 	_draw_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_draw_material.albedo_color = Color(0.8, 0.85, 0.95, 0.5)
+	_draw_material.albedo_color = Color(0.72, 0.78, 0.88, 0.5)
 	_draw_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mesh.material = _draw_material
 	_particles.draw_pass_1 = mesh
